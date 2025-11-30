@@ -3,7 +3,7 @@
   "version": "1.0.7",
   "description": "Custom Pino configuration for database logging.",
   "type": "commonjs",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
