@@ -1,0 +1,17 @@
+// pino-db-config/tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",        // Donde se generarán los archivos JS
+    "rootDir": "./src",        // Donde están los archivos fuente TS
+    "declaration": true,       // CRUCIAL: Genera los archivos .d.ts
+    "strict": true,            // Buenas prácticas de seguridad
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

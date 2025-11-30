@@ -1,0 +1,20 @@
+{
+  "name": "pino-config",
+  "version": "1.0.1",
+  "description": "Custom Pino configuration for database logging.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "node-cron": "^4.2.1",
+    "pino": "^8.0.0"
+  }
+}
