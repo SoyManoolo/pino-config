@@ -1,7 +1,7 @@
 import { pino } from 'pino'
 import cron from 'node-cron'
-import { IDbLogHandler } from './IDbLogHandler'
-export * from './IDbLogHandler'
+import { IDbLogHandler } from './types'
+export * from './types'
 
 export async function createLogger(handler: IDbLogHandler) {
 

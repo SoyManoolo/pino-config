@@ -2,7 +2,7 @@
   "name": "pino-config",
   "version": "1.0.4",
   "description": "Custom Pino configuration for database logging.",
-  "type": "module",
+  "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
