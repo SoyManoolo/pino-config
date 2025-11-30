@@ -1,6 +1,6 @@
 {
   "name": "pino-config",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Custom Pino configuration for database logging.",
   "type": "commonjs",
   "main": "./dist/index.js",
