@@ -39,6 +39,7 @@ export async function createLogger(
   };
 
   let pendingLogWrites = Promise.resolve();
+  let isClosed = false;
   const enqueueLog = (
     level: LogLevel,
     message: string,
@@ -62,6 +63,10 @@ export async function createLogger(
   // Configuración e implementación de debug, info, warn y error
   const dbLogger: Logger = {
     debug: (message: string, meta?: Record<string, unknown>): Promise<void> => {
+      if (isClosed) {
+        return Promise.reject(new Error('Logger is closed.'));
+      }
+
       if (handler.environment === 'development') {
         logToConsole('debug', message, meta);
         return enqueueLog('debug', message, meta);
@@ -70,18 +75,31 @@ export async function createLogger(
       return Promise.resolve();
     },
     info: (message: string, meta?: Record<string, unknown>): Promise<void> => {
+      if (isClosed) {
+        return Promise.reject(new Error('Logger is closed.'));
+      }
+
       logToConsole('info', message, meta);
       return enqueueLog('info', message, meta);
     },
     warn: (message: string, meta?: Record<string, unknown>): Promise<void> => {
+      if (isClosed) {
+        return Promise.reject(new Error('Logger is closed.'));
+      }
+
       logToConsole('warn', message, meta);
       return enqueueLog('warn', message, meta);
     },
     error: (message: string, meta?: Record<string, unknown>): Promise<void> => {
+      if (isClosed) {
+        return Promise.reject(new Error('Logger is closed.'));
+      }
+
       logToConsole('error', message, meta);
       return enqueueLog('error', message, meta);
     },
     close: async (): Promise<void> => {
+      isClosed = true;
       cleanupTask?.stop();
       await pendingLogWrites;
     },

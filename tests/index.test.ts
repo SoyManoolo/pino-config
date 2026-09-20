@@ -131,6 +131,17 @@ describe('createLogger', () => {
     expect(closed).toBe(true)
   })
 
+  it.each(['debug', 'info', 'warn', 'error'] as const)('rejects %s logs after close', async (level) => {
+    const handler = createHandler()
+    const logger = await createLogger(handler)
+
+    await logger.close()
+
+    await expect(logger[level]('after close')).rejects.toThrow('Logger is closed.')
+    expect(handler.saveLog).not.toHaveBeenCalled()
+    expect(mocks.consoleLogger[level]).not.toHaveBeenCalled()
+  })
+
   it('schedules cleanup, logs its result, and stops the task on close', async () => {
     const handler = createHandler()
     const logger = await createLogger(handler, {
