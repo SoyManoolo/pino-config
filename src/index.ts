@@ -35,25 +35,46 @@ export async function createLogger(handler: IDbLogHandler) {
     }
   };
 
+  let pendingLogWrites = Promise.resolve();
+  const enqueueLog = (
+    level: 'debug' | 'info' | 'warn' | 'error',
+    message: string,
+    meta?: object,
+  ): Promise<void> => {
+    pendingLogWrites = pendingLogWrites
+      .then(() => handler.saveLog(level, message, meta))
+      .catch((error: unknown) => {
+        logToConsole('error', '[LOGGER] Failed to save log to database.', {
+          error,
+          level,
+          message,
+        });
+      });
+
+    return pendingLogWrites;
+  };
+
   // Configuración e implementación de debug, info, warn y error
   const dbLogger = {
-    debug: (message: string, meta?: object) => {
+    debug: (message: string, meta?: object): Promise<void> => {
       if (handler.environment === 'development') {
         logToConsole('debug', message, meta);
-        handler.saveLog('debug', message, meta);
+        return enqueueLog('debug', message, meta);
       }
+
+      return Promise.resolve();
     },
-    info: (message: string, meta?: object) => {
+    info: (message: string, meta?: object): Promise<void> => {
       logToConsole('info', message, meta);
-      handler.saveLog('info', message, meta);
+      return enqueueLog('info', message, meta);
     },
-    warn: (message: string, meta?: object) => {
+    warn: (message: string, meta?: object): Promise<void> => {
       logToConsole('warn', message, meta);
-      handler.saveLog('warn', message, meta);
+      return enqueueLog('warn', message, meta);
     },
-    error: (message: string, meta?: object) => {
+    error: (message: string, meta?: object): Promise<void> => {
       logToConsole('error', message, meta);
-      handler.saveLog('error', message, meta);
+      return enqueueLog('error', message, meta);
     },
   };
 
