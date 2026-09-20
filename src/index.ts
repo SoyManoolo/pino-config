@@ -1,9 +1,12 @@
 import { pino } from 'pino'
 import cron from 'node-cron'
-import { IDbLogHandler } from './types'
+import { IDbLogHandler, Logger, LoggerOptions } from './types'
 export * from './types'
 
-export async function createLogger(handler: IDbLogHandler) {
+export async function createLogger(
+  handler: IDbLogHandler,
+  options: LoggerOptions = {},
+): Promise<Logger> {
 
   // Si la función de inicialización está definida, llamarla para que se ejecute
   if (handler.initialize) {
@@ -54,8 +57,10 @@ export async function createLogger(handler: IDbLogHandler) {
     return pendingLogWrites;
   };
 
+  let cleanupTask: ReturnType<typeof cron.schedule> | undefined;
+
   // Configuración e implementación de debug, info, warn y error
-  const dbLogger = {
+  const dbLogger: Logger = {
     debug: (message: string, meta?: object): Promise<void> => {
       if (handler.environment === 'development') {
         logToConsole('debug', message, meta);
@@ -76,21 +81,27 @@ export async function createLogger(handler: IDbLogHandler) {
       logToConsole('error', message, meta);
       return enqueueLog('error', message, meta);
     },
+    close: async (): Promise<void> => {
+      cleanupTask?.stop();
+      await pendingLogWrites;
+    },
   };
 
-  // Si el entorno de desarrollo no es de testing hacer que se ejecute el cron para el borrado de los logs a las 00:00 de cada día
-  if (handler.environment !== 'test') {
-    cron.schedule('0 0 * * *', async () => {
+  if (options.cleanup?.enabled) {
+    const schedule = options.cleanup.schedule ?? '0 0 * * *';
+    const cronOptions = options.cleanup.timezone
+      ? { timezone: options.cleanup.timezone }
+      : undefined;
+
+    cleanupTask = cron.schedule(schedule, async () => {
       try {
         const deletedLogs = await handler.cleanUpLogs();
-        dbLogger.info(`[CRON] Logs cleanup executed at 00:00. Deleted ${deletedLogs} logs.`)
+        dbLogger.info(`[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`)
       } catch (error) {
         dbLogger.error('[CRON] Error in cron job deleting old logs:', { error });
       }
-    });
-    dbLogger.info(`Cron job scheduled for log cleanup`);
-  } else {
-    dbLogger.info('Cron job not scheduled in test environment.');
+    }, cronOptions);
+    dbLogger.info(`Cron job scheduled for log cleanup: ${schedule}`);
   }
 
   return dbLogger

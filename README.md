@@ -1,12 +1,12 @@
 # pino-config
 
-Custom Pino configuration for database logging with automatic cleanup and environment-based log levels.
+Custom Pino configuration for database logging with opt-in cleanup and environment-based log levels.
 
 ## Features
 
 - 🎨 Pretty logging with colored output for development
 - 💾 Database logging integration through custom handlers
-- 🧹 Automatic log cleanup with configurable cron jobs
+- 🧹 Optional log cleanup with configurable cron jobs
 - 🌍 Environment-based log level configuration
 - 🔧 TypeScript support with full type definitions
 - ⚡ Optional initialization hook for database setup
@@ -88,6 +88,16 @@ interface IDbLogHandler {
 }
 ```
 
+```typescript
+interface LoggerOptions {
+  cleanup?: {
+    enabled?: boolean;
+    schedule?: string;
+    timezone?: string;
+  };
+}
+```
+
 #### Properties
 
 - **`environment`**: `string` - Current environment (`'development'`, `'production'`, `'test'`, etc.)
@@ -105,13 +115,16 @@ interface IDbLogHandler {
 - **`initialize()`** _(optional)_: Initialize database connection or setup
   - Called automatically when creating the logger
 
-### `createLogger(handler)`
+### `createLogger(handler, options?)`
 
 Creates and configures a logger instance.
 
 #### Parameters
 
 - **`handler`**: `IDbLogHandler` - Your database handler implementation
+- **`options`**: `LoggerOptions` _(optional)_ - Configure the cleanup cron job
+
+Cleanup is disabled by default. Set `options.cleanup.enabled` to `true` to enable it. The default schedule is `0 0 * * *`; provide `schedule` and `timezone` to customize it.
 
 #### Returns
 
@@ -121,6 +134,7 @@ A `Promise` that resolves to a logger object with the following methods:
 - **`info(message, meta?)`**: Returns `Promise<void>` after queuing an informational log
 - **`warn(message, meta?)`**: Returns `Promise<void>` after queuing a warning log
 - **`error(message, meta?)`**: Returns `Promise<void>` after queuing an error log
+- **`close()`**: Returns `Promise<void>` after stopping the cleanup cron job and waiting for queued database writes
 
 Await a logger method when the database write must complete before continuing.
 
@@ -131,14 +145,14 @@ Await a logger method when the database write must complete before continuing.
 - Log level: `debug`
 - Console output: Colorized and pretty-printed
 - Debug logs are saved to database
-- Cron job for cleanup is active
+- Cleanup cron job is disabled by default
 
 ### Production Environment
 
 - Log level: `info` (debug logs are ignored)
 - Console output: Colorized and pretty-printed
 - Only info, warn, and error logs are saved
-- Cron job for cleanup is active
+- Cleanup cron job is disabled by default
 
 ### Test Environment
 
@@ -146,15 +160,27 @@ Await a logger method when the database write must complete before continuing.
 - Console output: Colorized and pretty-printed
 - Info, warn, and error logs are saved to the database
 - Debug logs are not saved in the test environment
-- Cron job is **disabled** to avoid interference with tests
+- Cleanup cron job is disabled by default
 
 ## Automatic Log Cleanup
 
-By default, a cron job runs daily at **00:00** to clean up old logs by calling `handler.cleanUpLogs()`.
+Cleanup is disabled by default. Enable it explicitly when creating the logger:
+
+```typescript
+const logger = await createLogger(handler, {
+  cleanup: {
+    enabled: true,
+    schedule: '0 0 * * *',
+    timezone: 'UTC',
+  },
+});
+```
+
+When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job and wait for pending log writes.
 
 This behavior is:
-- ✅ **Active** in `development` and `production` environments
-- ❌ **Disabled** in `test` environment
+- ❌ **Disabled by default** in every environment
+- ✅ **Enabled** only when `options.cleanup.enabled` is `true`
 
 The cleanup logic is implemented in your `cleanUpLogs()` method, giving you full control over what gets deleted.
 
