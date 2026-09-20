@@ -124,13 +124,15 @@ interface Logger {
 ```
 
 ```typescript
+interface CleanupOptions {
+  enabled?: boolean;
+  schedule?: string;
+  timezone?: string;
+}
+
 interface LoggerOptions {
   onPersistenceError?: (error: unknown) => void | Promise<void>;
-  cleanup?: {
-    enabled?: boolean;
-    schedule?: string;
-    timezone?: string;
-  };
+  cleanup?: CleanupOptions;
 }
 ```
 

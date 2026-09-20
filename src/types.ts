@@ -8,13 +8,15 @@ export interface IDbLogHandler {
   initialize?(): Promise<void>;
 }
 
+export interface CleanupOptions {
+  enabled?: boolean;
+  schedule?: string;
+  timezone?: string;
+}
+
 export interface LoggerOptions {
   onPersistenceError?: (error: unknown) => void | Promise<void>;
-  cleanup?: {
-    enabled?: boolean;
-    schedule?: string;
-    timezone?: string;
-  };
+  cleanup?: CleanupOptions;
 }
 
 export interface Logger {
