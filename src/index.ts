@@ -3,6 +3,18 @@ import cron from 'node-cron'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
 export * from './types'
 
+interface CleanupOwner {
+  log(level: LogLevel, message: string, meta?: Record<string, unknown>): Promise<void>;
+  reportPersistenceError(error: unknown): Promise<void>;
+}
+
+interface CleanupRegistration {
+  task: ReturnType<typeof cron.schedule>;
+  owners: Set<CleanupOwner>;
+}
+
+const cleanupRegistrations = new WeakMap<IDbLogHandler, CleanupRegistration>()
+
 export async function createLogger(
   handler: IDbLogHandler,
   options: LoggerOptions = {},
@@ -69,7 +81,24 @@ export async function createLogger(
     return pendingLogWrites;
   };
 
-  let cleanupTask: ReturnType<typeof cron.schedule> | undefined;
+  let cleanupRegistration: CleanupRegistration | undefined;
+  const cleanupOwner: CleanupOwner = {
+    log: enqueueLog,
+    reportPersistenceError,
+  };
+  const releaseCleanup = (): void => {
+    if (!cleanupRegistration) {
+      return;
+    }
+
+    cleanupRegistration.owners.delete(cleanupOwner);
+    if (cleanupRegistration.owners.size === 0) {
+      cleanupRegistration.task.stop();
+      cleanupRegistrations.delete(handler);
+    }
+
+    cleanupRegistration = undefined;
+  };
 
   // Configuración e implementación de debug, info, warn y error
   const dbLogger: Logger = {
@@ -111,7 +140,7 @@ export async function createLogger(
     },
     close: async (): Promise<void> => {
       isClosed = true;
-      cleanupTask?.stop();
+      releaseCleanup();
       await pendingLogWrites;
     },
   };
@@ -122,16 +151,33 @@ export async function createLogger(
       ? { timezone: options.cleanup.timezone }
       : undefined;
 
-    cleanupTask = cron.schedule(schedule, async () => {
-      try {
-        const deletedLogs = await handler.cleanUpLogs();
-        dbLogger.info(`[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`)
-      } catch (error) {
-        await reportPersistenceError(error);
-        dbLogger.error('[CRON] Error in cron job deleting old logs:', { error });
-      }
-    }, cronOptions);
-    dbLogger.info(`Cron job scheduled for log cleanup: ${schedule}`);
+    const existingRegistration = cleanupRegistrations.get(handler);
+    if (existingRegistration) {
+      cleanupRegistration = existingRegistration;
+      existingRegistration.owners.add(cleanupOwner);
+    } else {
+      const registration = {
+        task: undefined as unknown as ReturnType<typeof cron.schedule>,
+        owners: new Set<CleanupOwner>([cleanupOwner]),
+      };
+      registration.task = cron.schedule(schedule, async () => {
+        const owner = registration.owners.values().next().value as CleanupOwner | undefined;
+        if (!owner) {
+          return;
+        }
+
+        try {
+          const deletedLogs = await handler.cleanUpLogs();
+          await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
+        } catch (error) {
+          await owner.reportPersistenceError(error);
+          await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
+        }
+      }, cronOptions);
+      cleanupRegistrations.set(handler, registration);
+      cleanupRegistration = registration;
+      dbLogger.info(`Cron job scheduled for log cleanup: ${schedule}`);
+    }
   }
 
   return dbLogger

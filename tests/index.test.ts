@@ -179,6 +179,20 @@ describe('createLogger', () => {
     expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
   })
 
+  it('shares cleanup tasks between loggers using the same handler', async () => {
+    const handler = createHandler()
+    const firstLogger = await createLogger(handler, { cleanup: { enabled: true } })
+    const secondLogger = await createLogger(handler, { cleanup: { enabled: true } })
+
+    expect(mocks.schedule).toHaveBeenCalledOnce()
+
+    await firstLogger.close()
+    expect(mocks.schedule.mock.results[0].value.stop).not.toHaveBeenCalled()
+
+    await secondLogger.close()
+    expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
+  })
+
   it('reports cleanup failures through the handler logger', async () => {
     const handler = createHandler()
     const error = new Error('cleanup unavailable')
