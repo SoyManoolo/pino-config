@@ -100,6 +100,37 @@ describe('createLogger', () => {
     )
   })
 
+  it('serializes concurrent writes and close waits for all of them', async () => {
+    const handler = createHandler()
+    const calls: string[] = []
+    const deferredWrites: Array<() => void> = []
+    vi.mocked(handler.saveLog).mockImplementation(async (_level, message) => {
+      calls.push(message)
+      await new Promise<void>((resolve) => deferredWrites.push(resolve))
+    })
+    const logger = await createLogger(handler)
+
+    const firstWrite = logger.info('first')
+    const secondWrite = logger.warn('second')
+    let closed = false
+    const close = logger.close().then(() => {
+      closed = true
+    })
+
+    await Promise.resolve()
+    expect(calls).toEqual(['first'])
+    expect(closed).toBe(false)
+
+    deferredWrites.shift()?.()
+    await vi.waitFor(() => expect(calls).toEqual(['first', 'second']))
+    expect(closed).toBe(false)
+
+    deferredWrites.shift()?.()
+    await Promise.all([firstWrite, secondWrite, close])
+    expect(calls).toEqual(['first', 'second'])
+    expect(closed).toBe(true)
+  })
+
   it('schedules cleanup, logs its result, and stops the task on close', async () => {
     const handler = createHandler()
     const logger = await createLogger(handler, {
@@ -123,5 +154,39 @@ describe('createLogger', () => {
       undefined,
     )
     expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
+  })
+
+  it('reports cleanup failures through the handler logger', async () => {
+    const handler = createHandler()
+    const error = new Error('cleanup unavailable')
+    vi.mocked(handler.cleanUpLogs).mockRejectedValue(error)
+    const logger = await createLogger(handler, { cleanup: { enabled: true } })
+    const callback = mocks.schedule.mock.calls[0][1] as () => Promise<void>
+
+    await callback()
+    await logger.close()
+
+    expect(handler.cleanUpLogs).toHaveBeenCalledOnce()
+    expect(handler.saveLog).toHaveBeenLastCalledWith(
+      'error',
+      '[CRON] Error in cron job deleting old logs:',
+      { error },
+    )
+  })
+
+  it.each([
+    ['invalid cron expression', { schedule: 'not a cron expression' }],
+    ['invalid timezone', { timezone: 'Not/A_Timezone' }],
+  ])('propagates %s errors from node-cron', async (_description, cleanup) => {
+    mocks.schedule.mockImplementationOnce((schedule, _callback, options) => {
+      if (schedule === cleanup.schedule || options?.timezone === cleanup.timezone) {
+        throw new Error('Invalid cron configuration')
+      }
+
+      return { stop: vi.fn() }
+    })
+
+    await expect(createLogger(createHandler(), { cleanup: { enabled: true, ...cleanup } }))
+      .rejects.toThrow('Invalid cron configuration')
   })
 })

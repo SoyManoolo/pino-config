@@ -32,9 +32,9 @@ export async function createLogger(
   ) => {
     const log = logger[level] as any;
     if (meta === undefined) {
-      log(message);
+      log.call(logger, message);
     } else {
-      log(meta, message);
+      log.call(logger, meta, message);
     }
   };
 
