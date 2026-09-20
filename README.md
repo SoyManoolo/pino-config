@@ -59,13 +59,18 @@ class MyDatabaseHandler implements IDbLogHandler {
 import { createLogger } from 'pino-config';
 
 const handler = new MyDatabaseHandler(process.env.NODE_ENV || 'development');
-const logger = createLogger(handler);
 
-// Use the logger
-logger.debug('Debug message', { userId: 123 });
-logger.info('User logged in', { username: 'john' });
-logger.warn('Deprecated API called', { endpoint: '/old-api' });
-logger.error('Database connection failed', { error: 'Connection timeout' });
+async function main() {
+  const logger = await createLogger(handler);
+
+  // Await log calls when persistence must be complete before continuing.
+  await logger.debug('Debug message', { userId: 123 });
+  await logger.info('User logged in', { username: 'john' });
+  await logger.warn('Deprecated API called', { endpoint: '/old-api' });
+  await logger.error('Database connection failed', { error: 'Connection timeout' });
+}
+
+void main();
 ```
 
 ## API Reference
@@ -110,12 +115,14 @@ Creates and configures a logger instance.
 
 #### Returns
 
-A logger object with the following methods:
+A `Promise` that resolves to a logger object with the following methods:
 
-- **`debug(message, meta?)`**: Log debug messages (only in development)
-- **`info(message, meta?)`**: Log informational messages
-- **`warn(message, meta?)`**: Log warning messages
-- **`error(message, meta?)`**: Log error messages
+- **`debug(message, meta?)`**: Returns `Promise<void>` after queuing a debug log (only in development)
+- **`info(message, meta?)`**: Returns `Promise<void>` after queuing an informational log
+- **`warn(message, meta?)`**: Returns `Promise<void>` after queuing a warning log
+- **`error(message, meta?)`**: Returns `Promise<void>` after queuing an error log
+
+Await a logger method when the database write must complete before continuing.
 
 ## Environment-Based Behavior
 
@@ -189,9 +196,13 @@ class MongoDbLogHandler implements IDbLogHandler {
 }
 
 const handler = new MongoDbLogHandler(process.env.NODE_ENV || 'development');
-const logger = createLogger(handler);
 
-logger.info('Application started', { version: '1.0.0' });
+async function main() {
+  const logger = await createLogger(handler);
+  await logger.info('Application started', { version: '1.0.0' });
+}
+
+void main();
 ```
 
 ## TypeScript Support
