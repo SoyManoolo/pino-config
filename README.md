@@ -179,6 +179,7 @@ const logger = await createLogger(handler, {
 When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job and wait for pending log writes.
 
 This behavior is:
+
 - ❌ **Disabled by default** in every environment
 - ✅ **Enabled** only when `options.cleanup.enabled` is `true`
 
