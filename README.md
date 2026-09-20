@@ -24,12 +24,12 @@ npm install pino-config
 First, implement the `IDbLogHandler` interface to define how logs should be stored in your database:
 
 ```typescript
-import { IDbLogHandler } from 'pino-config';
+import { Environment, IDbLogHandler, LogLevel } from 'pino-config';
 
 class MyDatabaseHandler implements IDbLogHandler {
-  environment: string;
+  environment: Environment;
 
-  constructor(env: string) {
+  constructor(env: Environment) {
     this.environment = env;
   }
 
@@ -38,7 +38,7 @@ class MyDatabaseHandler implements IDbLogHandler {
     console.log('Database initialized');
   }
 
-  async saveLog(level: string, message: string, meta?: object): Promise<void> {
+  async saveLog(level: LogLevel, message: string, meta?: Record<string, unknown>): Promise<void> {
     // Save log to your database
     // Example: await db.logs.create({ level, message, meta, timestamp: new Date() });
   }
@@ -58,7 +58,13 @@ class MyDatabaseHandler implements IDbLogHandler {
 ```typescript
 import { createLogger } from 'pino-config';
 
-const handler = new MyDatabaseHandler(process.env.NODE_ENV || 'development');
+const environment: Environment =
+  process.env.NODE_ENV === 'production' ||
+  process.env.NODE_ENV === 'test' ||
+  process.env.NODE_ENV === 'development'
+    ? process.env.NODE_ENV
+    : 'development';
+const handler = new MyDatabaseHandler(environment);
 
 async function main() {
   const logger = await createLogger(handler);
@@ -81,10 +87,18 @@ Your database handler must implement this interface:
 
 ```typescript
 interface IDbLogHandler {
-  environment: string;
-  saveLog(level: string, message: string, meta?: object): Promise<void>;
+  environment: 'development' | 'production' | 'test';
+  saveLog(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: Record<string, unknown>): Promise<void>;
   cleanUpLogs(): Promise<number>;
   initialize?(): Promise<void>;
+}
+
+interface Logger {
+  debug(message: string, meta?: Record<string, unknown>): Promise<void>;
+  info(message: string, meta?: Record<string, unknown>): Promise<void>;
+  warn(message: string, meta?: Record<string, unknown>): Promise<void>;
+  error(message: string, meta?: Record<string, unknown>): Promise<void>;
+  close(): Promise<void>;
 }
 ```
 
@@ -100,7 +114,7 @@ interface LoggerOptions {
 
 #### Properties
 
-- **`environment`**: `string` - Current environment (`'development'`, `'production'`, `'test'`, etc.)
+- **`environment`**: `'development' | 'production' | 'test'` - Current environment
 
 #### Methods
 
@@ -188,14 +202,14 @@ The cleanup logic is implemented in your `cleanUpLogs()` method, giving you full
 ## Example with MongoDB
 
 ```typescript
-import { createLogger, IDbLogHandler } from 'pino-config';
+import { createLogger, Environment, IDbLogHandler, LogLevel } from 'pino-config';
 import { MongoClient, Db } from 'mongodb';
 
 class MongoDbLogHandler implements IDbLogHandler {
-  environment: string;
+  environment: Environment;
   private db?: Db;
 
-  constructor(env: string) {
+  constructor(env: Environment) {
     this.environment = env;
   }
 
@@ -204,7 +218,7 @@ class MongoDbLogHandler implements IDbLogHandler {
     this.db = client.db('logs');
   }
 
-  async saveLog(level: string, message: string, meta?: object): Promise<void> {
+  async saveLog(level: LogLevel, message: string, meta?: Record<string, unknown>): Promise<void> {
     await this.db!.collection('logs').insertOne({
       level,
       message,
@@ -222,7 +236,13 @@ class MongoDbLogHandler implements IDbLogHandler {
   }
 }
 
-const handler = new MongoDbLogHandler(process.env.NODE_ENV || 'development');
+const environment: Environment =
+  process.env.NODE_ENV === 'production' ||
+  process.env.NODE_ENV === 'test' ||
+  process.env.NODE_ENV === 'development'
+    ? process.env.NODE_ENV
+    : 'development';
+const handler = new MongoDbLogHandler(environment);
 
 async function main() {
   const logger = await createLogger(handler);
