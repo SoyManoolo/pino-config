@@ -137,7 +137,8 @@ A logger object with the following methods:
 
 - Log level: `debug`
 - Console output: Colorized and pretty-printed
-- All logs are saved to database
+- Info, warn, and error logs are saved to the database
+- Debug logs are not saved in the test environment
 - Cron job is **disabled** to avoid interference with tests
 
 ## Automatic Log Cleanup
