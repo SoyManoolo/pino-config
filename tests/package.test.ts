@@ -50,7 +50,7 @@ describe('published package', () => {
         [
           'install',
           '--ignore-scripts',
-          '--offline',
+          '--prefer-offline',
           '--no-audit',
           '--no-fund',
           '--package-lock=false',
