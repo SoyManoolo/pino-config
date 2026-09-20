@@ -38,6 +38,16 @@ export async function createLogger(
     }
   };
 
+  const reportPersistenceError = async (error: unknown): Promise<void> => {
+    try {
+      await options.onPersistenceError?.(error);
+    } catch (callbackError) {
+      logToConsole('error', '[LOGGER] Persistence error callback failed.', {
+        error: callbackError,
+      });
+    }
+  };
+
   let pendingLogWrites = Promise.resolve();
   let isClosed = false;
   const enqueueLog = (
@@ -47,7 +57,8 @@ export async function createLogger(
   ): Promise<void> => {
     pendingLogWrites = pendingLogWrites
       .then(() => handler.saveLog(level, message, meta))
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
+        await reportPersistenceError(error);
         logToConsole('error', '[LOGGER] Failed to save log to database.', {
           error,
           level,
@@ -116,6 +127,7 @@ export async function createLogger(
         const deletedLogs = await handler.cleanUpLogs();
         dbLogger.info(`[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`)
       } catch (error) {
+        await reportPersistenceError(error);
         dbLogger.error('[CRON] Error in cron job deleting old logs:', { error });
       }
     }, cronOptions);

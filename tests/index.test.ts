@@ -100,6 +100,18 @@ describe('createLogger', () => {
     )
   })
 
+  it('reports persistence errors through the optional callback', async () => {
+    const handler = createHandler()
+    const error = new Error('database unavailable')
+    const onPersistenceError = vi.fn()
+    vi.mocked(handler.saveLog).mockRejectedValueOnce(error)
+    const logger = await createLogger(handler, { onPersistenceError })
+
+    await expect(logger.error('Write failed')).resolves.toBeUndefined()
+
+    expect(onPersistenceError).toHaveBeenCalledWith(error)
+  })
+
   it('serializes concurrent writes and close waits for all of them', async () => {
     const handler = createHandler()
     const calls: string[] = []
@@ -170,14 +182,19 @@ describe('createLogger', () => {
   it('reports cleanup failures through the handler logger', async () => {
     const handler = createHandler()
     const error = new Error('cleanup unavailable')
+    const onPersistenceError = vi.fn()
     vi.mocked(handler.cleanUpLogs).mockRejectedValue(error)
-    const logger = await createLogger(handler, { cleanup: { enabled: true } })
+    const logger = await createLogger(handler, {
+      cleanup: { enabled: true },
+      onPersistenceError,
+    })
     const callback = mocks.schedule.mock.calls[0][1] as () => Promise<void>
 
     await callback()
     await logger.close()
 
     expect(handler.cleanUpLogs).toHaveBeenCalledOnce()
+    expect(onPersistenceError).toHaveBeenCalledWith(error)
     expect(handler.saveLog).toHaveBeenLastCalledWith(
       'error',
       '[CRON] Error in cron job deleting old logs:',

@@ -9,6 +9,7 @@ export interface IDbLogHandler {
 }
 
 export interface LoggerOptions {
+  onPersistenceError?: (error: unknown) => void | Promise<void>;
   cleanup?: {
     enabled?: boolean;
     schedule?: string;

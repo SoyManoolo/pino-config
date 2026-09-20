@@ -125,6 +125,7 @@ interface Logger {
 
 ```typescript
 interface LoggerOptions {
+  onPersistenceError?: (error: unknown) => void | Promise<void>;
   cleanup?: {
     enabled?: boolean;
     schedule?: string;
@@ -132,6 +133,10 @@ interface LoggerOptions {
   };
 }
 ```
+
+Use `onPersistenceError` to forward database write or cleanup failures to an
+alerting or metrics system. The callback is awaited, and errors thrown by the
+callback are reported to the console without rejecting the logger operation.
 
 #### Properties
 
@@ -158,6 +163,8 @@ Creates and configures a logger instance.
 
 - **`handler`**: `IDbLogHandler` - Your database handler implementation
 - **`options`**: `LoggerOptions` _(optional)_ - Configure the cleanup cron job
+
+Set `options.onPersistenceError` to observe database persistence failures.
 
 Cleanup is disabled by default. Set `options.cleanup.enabled` to `true` to enable it. The default schedule is `0 0 * * *`; provide `schedule` and `timezone` to customize it.
 
