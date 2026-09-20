@@ -282,6 +282,46 @@ This package is written in TypeScript and includes full type definitions. No nee
 - **pino**: Fast and low overhead logging library
 - **node-cron**: Cron job scheduler for automatic log cleanup
 
+## Roadmap
+
+### Reliability and release quality
+
+- Prevent or reject log calls after `logger.close()`.
+- Verify the generated package by installing its `.tgz` in a temporary project
+  and testing both CommonJS and ESM imports.
+- Add package metadata for repository, homepage, issue tracker, keywords, and
+  supported Node.js versions.
+
+### Observability and resilience
+
+- Use structured JSON output in production and make the pretty console
+  transport configurable.
+- Add an `onPersistenceError` hook so applications can report failed database
+  writes through their own monitoring system.
+- Make log levels configurable instead of deriving them exclusively from the
+  environment.
+- Define a strategy for multiple logger instances to avoid duplicated cleanup
+  jobs.
+- Add queue limits or backpressure for a high volume of pending database
+  writes.
+
+### API improvements
+
+- Extract cleanup settings into a dedicated `CleanupOptions` type.
+- Evaluate support for custom environments while retaining predictable default
+  behavior.
+- Consider Pino-style child loggers and contextual bindings.
+- Offer an optional strict persistence mode that propagates database failures.
+
+### Testing and documentation
+
+- Add ESLint and enforce it in CI alongside Prettier.
+- Track test coverage and define a minimum threshold.
+- Add load and concurrency tests for the persistence queue.
+- Add tests for cron schedules and timezones using the real scheduler.
+- Document graceful shutdown, persistence-error behavior, and the behavior of
+  multiple logger instances.
+
 ## License
 
 MIT
