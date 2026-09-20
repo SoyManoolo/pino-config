@@ -24,6 +24,7 @@
     "build": "vite build",
     "format": "prettier --write README.md",
     "format:check": "prettier --check README.md",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
