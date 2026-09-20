@@ -1,6 +1,6 @@
 import { pino } from 'pino'
 import cron from 'node-cron'
-import { IDbLogHandler, Logger, LoggerOptions } from './types'
+import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
 export * from './types'
 
 export async function createLogger(
@@ -26,9 +26,9 @@ export async function createLogger(
   });
 
   const logToConsole = (
-    level: 'debug' | 'info' | 'warn' | 'error',
+    level: LogLevel,
     message: string,
-    meta?: object,
+    meta?: Record<string, unknown>,
   ) => {
     const log = logger[level] as any;
     if (meta === undefined) {
@@ -40,9 +40,9 @@ export async function createLogger(
 
   let pendingLogWrites = Promise.resolve();
   const enqueueLog = (
-    level: 'debug' | 'info' | 'warn' | 'error',
+    level: LogLevel,
     message: string,
-    meta?: object,
+    meta?: Record<string, unknown>,
   ): Promise<void> => {
     pendingLogWrites = pendingLogWrites
       .then(() => handler.saveLog(level, message, meta))
@@ -61,7 +61,7 @@ export async function createLogger(
 
   // Configuración e implementación de debug, info, warn y error
   const dbLogger: Logger = {
-    debug: (message: string, meta?: object): Promise<void> => {
+    debug: (message: string, meta?: Record<string, unknown>): Promise<void> => {
       if (handler.environment === 'development') {
         logToConsole('debug', message, meta);
         return enqueueLog('debug', message, meta);
@@ -69,15 +69,15 @@ export async function createLogger(
 
       return Promise.resolve();
     },
-    info: (message: string, meta?: object): Promise<void> => {
+    info: (message: string, meta?: Record<string, unknown>): Promise<void> => {
       logToConsole('info', message, meta);
       return enqueueLog('info', message, meta);
     },
-    warn: (message: string, meta?: object): Promise<void> => {
+    warn: (message: string, meta?: Record<string, unknown>): Promise<void> => {
       logToConsole('warn', message, meta);
       return enqueueLog('warn', message, meta);
     },
-    error: (message: string, meta?: object): Promise<void> => {
+    error: (message: string, meta?: Record<string, unknown>): Promise<void> => {
       logToConsole('error', message, meta);
       return enqueueLog('error', message, meta);
     },

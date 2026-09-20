@@ -1,6 +1,9 @@
+export type Environment = 'development' | 'production' | 'test';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
 export interface IDbLogHandler {
-  environment: string;
-  saveLog(level: string, message: string, meta?: object): Promise<void>;
+  environment: Environment;
+  saveLog(level: LogLevel, message: string, meta?: Record<string, unknown>): Promise<void>;
   cleanUpLogs(): Promise<number>;
   initialize?(): Promise<void>;
 }
@@ -14,9 +17,9 @@ export interface LoggerOptions {
 }
 
 export interface Logger {
-  debug(message: string, meta?: object): Promise<void>;
-  info(message: string, meta?: object): Promise<void>;
-  warn(message: string, meta?: object): Promise<void>;
-  error(message: string, meta?: object): Promise<void>;
+  debug(message: string, meta?: Record<string, unknown>): Promise<void>;
+  info(message: string, meta?: Record<string, unknown>): Promise<void>;
+  warn(message: string, meta?: Record<string, unknown>): Promise<void>;
+  error(message: string, meta?: Record<string, unknown>): Promise<void>;
   close(): Promise<void>;
 }
