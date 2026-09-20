@@ -221,7 +221,9 @@ describe('createLogger', () => {
     ['invalid timezone', { timezone: 'Not/A_Timezone' }],
   ])('propagates %s errors from node-cron', async (_description, cleanup) => {
     mocks.schedule.mockImplementationOnce((schedule, _callback, options) => {
-      if (schedule === cleanup.schedule || options?.timezone === cleanup.timezone) {
+      const matchesSchedule = 'schedule' in cleanup && schedule === cleanup.schedule
+      const matchesTimezone = 'timezone' in cleanup && options?.timezone === cleanup.timezone
+      if (matchesSchedule || matchesTimezone) {
         throw new Error('Invalid cron configuration')
       }
 
