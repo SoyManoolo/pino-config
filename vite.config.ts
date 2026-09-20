@@ -14,7 +14,7 @@ export default defineConfig({
     lib: {
       entry: resolve(__dirname, 'src/index.ts'), // Tu punto de entrada
       name: 'PinoConfig',
-      fileName: (format) => `index.${format}.js`, // Generará index.es.js, index.cjs.js
+      fileName: (format) => (format === 'es' ? 'index.mjs' : 'index.cjs.js'),
       formats: ['es', 'cjs'],
     },
     // Excluir dependencias externas para que no se incluyan en el bundle final
