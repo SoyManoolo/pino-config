@@ -22,24 +22,37 @@ export async function createLogger(handler: IDbLogHandler) {
     },
   });
 
+  const logToConsole = (
+    level: 'debug' | 'info' | 'warn' | 'error',
+    message: string,
+    meta?: object,
+  ) => {
+    const log = logger[level] as any;
+    if (meta === undefined) {
+      log(message);
+    } else {
+      log(meta, message);
+    }
+  };
+
   // Configuración e implementación de debug, info, warn y error
   const dbLogger = {
     debug: (message: string, meta?: object) => {
       if (handler.environment === 'development') {
-        (logger.debug as any)(message, meta);
+        logToConsole('debug', message, meta);
         handler.saveLog('debug', message, meta);
       }
     },
     info: (message: string, meta?: object) => {
-      (logger.info as any)(message, meta);
+      logToConsole('info', message, meta);
       handler.saveLog('info', message, meta);
     },
     warn: (message: string, meta?: object) => {
-      (logger.warn as any)(message, meta);
+      logToConsole('warn', message, meta);
       handler.saveLog('warn', message, meta);
     },
     error: (message: string, meta?: object) => {
-      (logger.error as any)(message, meta);
+      logToConsole('error', message, meta);
       handler.saveLog('error', message, meta);
     },
   };
