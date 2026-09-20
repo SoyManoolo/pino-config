@@ -79,6 +79,27 @@ async function main() {
 void main();
 ```
 
+## Migrating to 2.0.0
+
+Version 2 narrows the `environment` type to `Environment` (`'development'`,
+`'production'`, or `'test'`). Normalize `NODE_ENV` before constructing your
+handler:
+
+```typescript
+import { Environment } from 'pino-config';
+
+const environment: Environment =
+  process.env.NODE_ENV === 'production' ||
+  process.env.NODE_ENV === 'test' ||
+  process.env.NODE_ENV === 'development'
+    ? process.env.NODE_ENV
+    : 'development';
+```
+
+`createLogger` and every logger method return promises. Await them when
+initialization or persistence must finish before continuing, and call
+`await logger.close()` during application shutdown when cleanup is enabled.
+
 ## API Reference
 
 ### `IDbLogHandler` Interface
