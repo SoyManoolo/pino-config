@@ -193,6 +193,45 @@ describe('createLogger', () => {
     expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
   })
 
+  it.each([
+    [{ enabled: true }, { enabled: true, schedule: '0 0 * * *' }],
+    [{ enabled: true, schedule: '0 0 * * *' }, { enabled: true }],
+    [{ enabled: true, timezone: 'UTC' }, { enabled: true, schedule: '0 0 * * *', timezone: 'UTC' }],
+    [{ enabled: true }, { enabled: true, timezone: '' }],
+  ])('shares a task for equivalent cleanup configurations', async (firstCleanup, secondCleanup) => {
+    const handler = createHandler()
+    const firstLogger = await createLogger(handler, { cleanup: firstCleanup })
+    const secondLogger = await createLogger(handler, { cleanup: secondCleanup })
+
+    expect(mocks.schedule).toHaveBeenCalledOnce()
+
+    await firstLogger.close()
+    expect(mocks.schedule.mock.results[0].value.stop).not.toHaveBeenCalled()
+
+    await secondLogger.close()
+    expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    [{ enabled: true }, { enabled: true, schedule: '*/5 * * * *' }],
+    [{ enabled: true, timezone: 'UTC' }, { enabled: true, timezone: 'Europe/Madrid' }],
+    [{ enabled: true }, { enabled: true, timezone: 'UTC' }],
+    [{ enabled: true }, { enabled: true, schedule: 'not a cron expression' }],
+  ])('rejects conflicting cleanup configurations without changing the shared task', async (firstCleanup, secondCleanup) => {
+    const handler = createHandler()
+    const firstLogger = await createLogger(handler, { cleanup: firstCleanup })
+    const task = mocks.schedule.mock.results[0].value
+
+    await expect(createLogger(handler, { cleanup: secondCleanup })).rejects.toThrow(
+      'Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.',
+    )
+    expect(mocks.schedule).toHaveBeenCalledOnce()
+    expect(task.stop).not.toHaveBeenCalled()
+
+    await firstLogger.close()
+    expect(task.stop).toHaveBeenCalledOnce()
+  })
+
   it('reports cleanup failures through the handler logger', async () => {
     const handler = createHandler()
     const error = new Error('cleanup unavailable')

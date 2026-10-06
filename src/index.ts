@@ -11,6 +11,8 @@ interface CleanupOwner {
 interface CleanupRegistration {
   task: ReturnType<typeof cron.schedule>;
   owners: Set<CleanupOwner>;
+  schedule: string;
+  timezone: string | undefined;
 }
 
 const cleanupRegistrations = new WeakMap<IDbLogHandler, CleanupRegistration>()
@@ -147,18 +149,25 @@ export async function createLogger(
 
   if (options.cleanup?.enabled) {
     const schedule = options.cleanup.schedule ?? '0 0 * * *';
-    const cronOptions = options.cleanup.timezone
-      ? { timezone: options.cleanup.timezone }
+    const timezone = options.cleanup.timezone || undefined;
+    const cronOptions = timezone
+      ? { timezone }
       : undefined;
 
     const existingRegistration = cleanupRegistrations.get(handler);
     if (existingRegistration) {
+      if (existingRegistration.schedule !== schedule || existingRegistration.timezone !== timezone) {
+        throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
+      }
+
       cleanupRegistration = existingRegistration;
       existingRegistration.owners.add(cleanupOwner);
     } else {
-      const registration = {
+      const registration: CleanupRegistration = {
         task: undefined as unknown as ReturnType<typeof cron.schedule>,
         owners: new Set<CleanupOwner>([cleanupOwner]),
+        schedule,
+        timezone,
       };
       registration.task = cron.schedule(schedule, async () => {
         const owner = registration.owners.values().next().value as CleanupOwner | undefined;
