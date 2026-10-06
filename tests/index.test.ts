@@ -51,6 +51,51 @@ describe('createLogger', () => {
     expect(events).toEqual(['initialize', 'pino'])
   })
 
+  it('initializes a shared handler only once across sequential logger creations', async () => {
+    const handler = createHandler()
+    handler.initialize = vi.fn().mockResolvedValue(undefined)
+
+    await createLogger(handler)
+    await createLogger(handler)
+
+    expect(handler.initialize).toHaveBeenCalledOnce()
+    expect(mocks.pino).toHaveBeenCalledTimes(2)
+  })
+
+  it('shares an in-flight initialization between concurrent logger creations', async () => {
+    const handler = createHandler()
+    let finishInitialization!: () => void
+    handler.initialize = vi.fn(() => new Promise<void>((resolve) => {
+      finishInitialization = resolve
+    }))
+
+    const first = createLogger(handler)
+    const second = createLogger(handler)
+    await Promise.resolve()
+
+    expect(handler.initialize).toHaveBeenCalledOnce()
+    expect(mocks.pino).not.toHaveBeenCalled()
+
+    finishInitialization()
+    await Promise.all([first, second])
+    expect(mocks.pino).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries initialization after a failure', async () => {
+    const handler = createHandler()
+    const error = new Error('initialization failed')
+    handler.initialize = vi.fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(undefined)
+
+    await expect(createLogger(handler)).rejects.toBe(error)
+    expect(mocks.pino).not.toHaveBeenCalled()
+
+    await createLogger(handler)
+    expect(handler.initialize).toHaveBeenCalledTimes(2)
+    expect(mocks.pino).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['development', 'debug'],
     ['production', 'info'],
