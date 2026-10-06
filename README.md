@@ -223,7 +223,17 @@ const logger = await createLogger(handler, {
 When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job and wait for pending log writes.
 
 Only one cleanup task is scheduled per handler, even when multiple loggers share
-that handler. The task stops after the last logger using it is closed.
+that handler. All loggers sharing a handler must use the same effective schedule
+and timezone. Omitting `schedule` is equivalent to specifying `0 0 * * *`;
+omitting `timezone` uses the scheduler's local timezone. A conflicting configuration
+rejects `createLogger()` with this error:
+
+```text
+Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.
+```
+
+The existing task continues unchanged. The task stops after the last logger using
+it is closed.
 
 This behavior is:
 
