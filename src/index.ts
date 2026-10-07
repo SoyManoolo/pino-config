@@ -16,15 +16,29 @@ interface CleanupRegistration {
 }
 
 const cleanupRegistrations = new WeakMap<IDbLogHandler, CleanupRegistration>()
+const initializations = new WeakMap<IDbLogHandler, Promise<void>>()
 
 export async function createLogger(
   handler: IDbLogHandler,
   options: LoggerOptions = {},
 ): Promise<Logger> {
 
-  // Si la función de inicialización está definida, llamarla para que se ejecute
-  if (handler.initialize) {
-    await handler.initialize();
+  const initialize = handler.initialize
+  if (initialize) {
+    let initialization = initializations.get(handler)
+    if (!initialization) {
+      initialization = Promise.resolve().then(() => initialize.call(handler))
+      initializations.set(handler, initialization)
+    }
+
+    try {
+      await initialization
+    } catch (error) {
+      if (initializations.get(handler) === initialization) {
+        initializations.delete(handler)
+      }
+      throw error
+    }
   }
 
   const logger = pino({
