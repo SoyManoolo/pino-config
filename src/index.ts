@@ -41,17 +41,33 @@ export async function createLogger(
     }
   }
 
-  const logger = pino({
-    level: handler.environment === 'production' ? 'info' : 'debug',
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        ignore: 'pid,hostname',
-        translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
-      },
+  const cleanupSchedule = options.cleanup?.enabled
+    ? options.cleanup.schedule ?? '0 0 * * *'
+    : undefined;
+  const cleanupTimezone = options.cleanup?.timezone || undefined;
+  const existingRegistration = options.cleanup?.enabled
+    ? cleanupRegistrations.get(handler)
+    : undefined;
+  if (existingRegistration &&
+    (existingRegistration.schedule !== cleanupSchedule || existingRegistration.timezone !== cleanupTimezone)) {
+    throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
+  }
+
+  const transport = pino.transport({
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      ignore: 'pid,hostname',
+      translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
     },
   });
+  let logger: ReturnType<typeof pino>;
+  try {
+    logger = pino({ level: handler.environment === 'production' ? 'info' : 'debug' }, transport);
+  } catch (error) {
+    transport.end();
+    throw error;
+  }
 
   const logToConsole = (
     level: LogLevel,
@@ -161,46 +177,48 @@ export async function createLogger(
     },
   };
 
-  if (options.cleanup?.enabled) {
-    const schedule = options.cleanup.schedule ?? '0 0 * * *';
-    const timezone = options.cleanup.timezone || undefined;
-    const cronOptions = timezone
-      ? { timezone }
-      : undefined;
+  try {
+    if (cleanupSchedule !== undefined) {
+      const cronOptions = cleanupTimezone
+        ? { timezone: cleanupTimezone }
+        : undefined;
 
-    const existingRegistration = cleanupRegistrations.get(handler);
-    if (existingRegistration) {
-      if (existingRegistration.schedule !== schedule || existingRegistration.timezone !== timezone) {
-        throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
+      if (existingRegistration) {
+        cleanupRegistration = existingRegistration;
+        existingRegistration.owners.add(cleanupOwner);
+      } else {
+        const registration: CleanupRegistration = {
+          task: undefined as unknown as ReturnType<typeof cron.schedule>,
+          owners: new Set<CleanupOwner>([cleanupOwner]),
+          schedule: cleanupSchedule,
+          timezone: cleanupTimezone,
+        };
+        registration.task = cron.schedule(cleanupSchedule, async () => {
+          const owner = registration.owners.values().next().value as CleanupOwner | undefined;
+          if (!owner) {
+            return;
+          }
+
+          try {
+            const deletedLogs = await handler.cleanUpLogs();
+            await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
+          } catch (error) {
+            await owner.reportPersistenceError(error);
+            await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
+          }
+        }, cronOptions);
+        cleanupRegistrations.set(handler, registration);
+        cleanupRegistration = registration;
+        dbLogger.info(`Cron job scheduled for log cleanup: ${cleanupSchedule}`);
       }
-
-      cleanupRegistration = existingRegistration;
-      existingRegistration.owners.add(cleanupOwner);
-    } else {
-      const registration: CleanupRegistration = {
-        task: undefined as unknown as ReturnType<typeof cron.schedule>,
-        owners: new Set<CleanupOwner>([cleanupOwner]),
-        schedule,
-        timezone,
-      };
-      registration.task = cron.schedule(schedule, async () => {
-        const owner = registration.owners.values().next().value as CleanupOwner | undefined;
-        if (!owner) {
-          return;
-        }
-
-        try {
-          const deletedLogs = await handler.cleanUpLogs();
-          await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
-        } catch (error) {
-          await owner.reportPersistenceError(error);
-          await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
-        }
-      }, cronOptions);
-      cleanupRegistrations.set(handler, registration);
-      cleanupRegistration = registration;
-      dbLogger.info(`Cron job scheduled for log cleanup: ${schedule}`);
     }
+  } catch (error) {
+    try {
+      releaseCleanup();
+    } finally {
+      transport.end();
+    }
+    throw error;
   }
 
   return dbLogger
