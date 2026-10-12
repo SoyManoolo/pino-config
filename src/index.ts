@@ -1,4 +1,5 @@
 import { pino } from 'pino'
+import { finished } from 'node:stream/promises'
 import cron from 'node-cron'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
 export * from './types'
@@ -41,17 +42,17 @@ export async function createLogger(
     }
   }
 
-  const logger = pino({
-    level: handler.environment === 'production' ? 'info' : 'debug',
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        ignore: 'pid,hostname',
-        translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
-      },
+  const transport = pino.transport({
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      ignore: 'pid,hostname',
+      translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
     },
   });
+  const logger = pino({
+    level: handler.environment === 'production' ? 'info' : 'debug',
+  }, transport);
 
   const logToConsole = (
     level: LogLevel,
@@ -78,6 +79,7 @@ export async function createLogger(
 
   let pendingLogWrites = Promise.resolve();
   let isClosed = false;
+  let closePromise: Promise<void> | undefined;
   const enqueueLog = (
     level: LogLevel,
     message: string,
@@ -154,10 +156,23 @@ export async function createLogger(
       logToConsole('error', message, meta);
       return enqueueLog('error', message, meta);
     },
-    close: async (): Promise<void> => {
+    close: (): Promise<void> => {
+      if (closePromise) {
+        return closePromise;
+      }
+
       isClosed = true;
-      releaseCleanup();
-      await pendingLogWrites;
+      closePromise = (async () => {
+        releaseCleanup();
+        try {
+          await pendingLogWrites;
+        } finally {
+          const transportFinished = finished(transport);
+          transport.end();
+          await transportFinished;
+        }
+      })();
+      return closePromise;
     },
   };
 

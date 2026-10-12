@@ -178,7 +178,7 @@ A `Promise` that resolves to a logger object with the following methods:
 - **`info(message, meta?)`**: Returns `Promise<void>` after queuing an informational log
 - **`warn(message, meta?)`**: Returns `Promise<void>` after queuing a warning log
 - **`error(message, meta?)`**: Returns `Promise<void>` after queuing an error log
-- **`close()`**: Returns `Promise<void>` after stopping the cleanup cron job and waiting for queued database writes
+- **`close()`**: Returns `Promise<void>` after stopping the cleanup cron job, waiting for queued database writes, and finishing this logger's console transport. Repeated calls share the same closure.
 
 Await a logger method when the database write must complete before continuing.
 
@@ -220,7 +220,7 @@ const logger = await createLogger(handler, {
 });
 ```
 
-When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job and wait for pending log writes.
+When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job, wait for pending log writes, and finish the console transport.
 
 Only one cleanup task is scheduled per handler, even when multiple loggers share
 that handler. All loggers sharing a handler must use the same effective schedule
