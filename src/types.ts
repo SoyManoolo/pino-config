@@ -17,6 +17,7 @@ export interface CleanupOptions {
 export interface LoggerOptions {
   onPersistenceError?: (error: unknown) => void | Promise<void>;
   cleanup?: CleanupOptions;
+  maxPendingWrites?: number;
 }
 
 export interface Logger {
