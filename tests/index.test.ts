@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createLogger } from '../src'
+import { createLogger, PendingLogWritesLimitError } from '../src'
 import type { IDbLogHandler } from '../src/types'
 
 const mocks = vi.hoisted(() => ({
@@ -187,6 +187,67 @@ describe('createLogger', () => {
     expect(calls).toEqual(['first', 'second'])
     expect(closed).toBe(true)
   })
+
+  it('rejects writes beyond the limit without queueing them, then frees capacity', async () => {
+    const handler = createHandler()
+    const calls: string[] = []
+    const release: Array<() => void> = []
+    vi.mocked(handler.saveLog).mockImplementation(async (_level, message) => {
+      calls.push(message)
+      await new Promise<void>((resolve) => release.push(resolve))
+    })
+    const logger = await createLogger(handler, { maxPendingWrites: 2 })
+
+    const first = logger.info('first')
+    const second = logger.info('second')
+    await expect(logger.info('rejected', { id: 3 })).rejects.toBeInstanceOf(PendingLogWritesLimitError)
+    await Promise.resolve()
+    expect(calls).toEqual(['first'])
+
+    release.shift()?.()
+    await vi.waitFor(() => expect(calls).toEqual(['first', 'second']))
+
+    release.shift()?.()
+    await Promise.all([first, second])
+    const third = logger.info('third')
+    const closing = logger.close()
+    await vi.waitFor(() => expect(calls).toEqual(['first', 'second', 'third']))
+    release.shift()?.()
+    await Promise.all([third, closing])
+    expect(calls).not.toContain('rejected')
+  })
+
+  it('frees a slot after a failed saveLog and keeps later writes in order', async () => {
+    const handler = createHandler()
+    let failFirst!: (error: Error) => void
+    const calls: string[] = []
+    vi.mocked(handler.saveLog).mockImplementation(async (_level, message) => {
+      calls.push(message)
+      if (message === 'first') {
+        await new Promise<void>((_resolve, reject) => { failFirst = reject })
+      }
+    })
+    const onPersistenceError = vi.fn()
+    const logger = await createLogger(handler, { maxPendingWrites: 1, onPersistenceError })
+    const first = logger.info('first')
+    await Promise.resolve()
+    await expect(logger.info('rejected')).rejects.toBeInstanceOf(PendingLogWritesLimitError)
+
+    const failure = new Error('database unavailable')
+    failFirst(failure)
+    await expect(first).resolves.toBeUndefined()
+    await expect(logger.info('second')).resolves.toBeUndefined()
+    await logger.close()
+    expect(calls).toEqual(['first', 'second'])
+    expect(onPersistenceError).toHaveBeenCalledWith(failure)
+  })
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid maxPendingWrites %s', async (maxPendingWrites) => {
+      await expect(createLogger(createHandler(), { maxPendingWrites })).rejects.toBeInstanceOf(RangeError)
+      expect(mocks.pino).not.toHaveBeenCalled()
+    },
+  )
 
   it.each(['debug', 'info', 'warn', 'error'] as const)('rejects %s logs after close', async (level) => {
     const handler = createHandler()

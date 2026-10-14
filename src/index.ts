@@ -17,11 +17,23 @@ interface CleanupRegistration {
 
 const cleanupRegistrations = new WeakMap<IDbLogHandler, CleanupRegistration>()
 const initializations = new WeakMap<IDbLogHandler, Promise<void>>()
+const DEFAULT_MAX_PENDING_WRITES = 1000
+
+export class PendingLogWritesLimitError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Pending log write limit reached (${limit}).`)
+    this.name = 'PendingLogWritesLimitError'
+  }
+}
 
 export async function createLogger(
   handler: IDbLogHandler,
   options: LoggerOptions = {},
 ): Promise<Logger> {
+  const maxPendingWrites = options.maxPendingWrites ?? DEFAULT_MAX_PENDING_WRITES
+  if (!Number.isSafeInteger(maxPendingWrites) || maxPendingWrites < 1) {
+    throw new RangeError('maxPendingWrites must be a positive safe integer.')
+  }
 
   const initialize = handler.initialize
   if (initialize) {
@@ -77,13 +89,19 @@ export async function createLogger(
   };
 
   let pendingLogWrites = Promise.resolve();
+  let pendingWriteCount = 0;
   let isClosed = false;
   const enqueueLog = (
     level: LogLevel,
     message: string,
     meta?: Record<string, unknown>,
   ): Promise<void> => {
-    pendingLogWrites = pendingLogWrites
+    if (pendingWriteCount >= maxPendingWrites) {
+      return Promise.reject(new PendingLogWritesLimitError(maxPendingWrites));
+    }
+
+    pendingWriteCount++;
+    const write = pendingLogWrites
       .then(() => handler.saveLog(level, message, meta))
       .catch(async (error: unknown) => {
         await reportPersistenceError(error);
@@ -92,9 +110,13 @@ export async function createLogger(
           level,
           message,
         });
+      })
+      .finally(() => {
+        pendingWriteCount--;
       });
 
-    return pendingLogWrites;
+    pendingLogWrites = write;
+    return write;
   };
 
   let cleanupRegistration: CleanupRegistration | undefined;
@@ -194,7 +216,11 @@ export async function createLogger(
           await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
         } catch (error) {
           await owner.reportPersistenceError(error);
-          await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
+          try {
+            await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
+          } catch (logError) {
+            await owner.reportPersistenceError(logError);
+          }
         }
       }, cronOptions);
       cleanupRegistrations.set(handler, registration);

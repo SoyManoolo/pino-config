@@ -133,6 +133,7 @@ interface CleanupOptions {
 interface LoggerOptions {
   onPersistenceError?: (error: unknown) => void | Promise<void>;
   cleanup?: CleanupOptions;
+  maxPendingWrites?: number;
 }
 ```
 
@@ -164,9 +165,24 @@ Creates and configures a logger instance.
 #### Parameters
 
 - **`handler`**: `IDbLogHandler` - Your database handler implementation
-- **`options`**: `LoggerOptions` _(optional)_ - Configure the cleanup cron job
+- **`options`**: `LoggerOptions` _(optional)_ - Configure cleanup and the pending write limit
 
 Set `options.onPersistenceError` to observe database persistence failures.
+
+`options.maxPendingWrites` defaults to `1000` and must be a positive safe integer.
+It limits the number of database writes per logger instance, including the
+currently active write and queued writes. When the limit is reached, the log
+method immediately rejects with `PendingLogWritesLimitError` (exported from
+`pino-config`); that entry is not sent to `saveLog`. Console logging still
+occurs. Handle rejections if calls are made without `await`, for example with
+`.catch(...)`. Debug calls outside development do not use the queue.
+
+Accepted writes run in order. A `saveLog` failure is reported through
+`onPersistenceError` and the console, and its log method resolves after that
+reporting completes. Its slot then becomes available. `close()` stops cleanup
+and waits for accepted writes and their error reporting, but does not retry
+rejected entries. It cannot finish while `saveLog` or an error callback remains
+blocked.
 
 Cleanup is disabled by default. Set `options.cleanup.enabled` to `true` to enable it. The default schedule is `0 0 * * *`; provide `schedule` and `timezone` to customize it.
 
@@ -174,10 +190,10 @@ Cleanup is disabled by default. Set `options.cleanup.enabled` to `true` to enabl
 
 A `Promise` that resolves to a logger object with the following methods:
 
-- **`debug(message, meta?)`**: Returns `Promise<void>` after queuing a debug log (only in development)
-- **`info(message, meta?)`**: Returns `Promise<void>` after queuing an informational log
-- **`warn(message, meta?)`**: Returns `Promise<void>` after queuing a warning log
-- **`error(message, meta?)`**: Returns `Promise<void>` after queuing an error log
+- **`debug(message, meta?)`**: Returns `Promise<void>` after persisting a debug log (only in development)
+- **`info(message, meta?)`**: Returns `Promise<void>` after persisting an informational log
+- **`warn(message, meta?)`**: Returns `Promise<void>` after persisting a warning log
+- **`error(message, meta?)`**: Returns `Promise<void>` after persisting an error log
 - **`close()`**: Returns `Promise<void>` after stopping the cleanup cron job and waiting for queued database writes
 
 Await a logger method when the database write must complete before continuing.
@@ -324,8 +340,6 @@ This package is written in TypeScript and includes full type definitions. No nee
   environment.
 - Define a strategy for multiple logger instances to avoid duplicated cleanup
   jobs.
-- Add queue limits or backpressure for a high volume of pending database
-  writes.
 
 ### API improvements
 
