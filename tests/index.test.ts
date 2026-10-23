@@ -101,6 +101,14 @@ describe('createLogger', () => {
     expect(mocks.pino).toHaveBeenCalledOnce()
   })
 
+  it('ends the transport when Pino creation fails', async () => {
+    mocks.pino.mockImplementationOnce(() => { throw new Error('Pino failed') })
+
+    await expect(createLogger(createHandler())).rejects.toThrow('Pino failed')
+    const transport = mocks.transport.mock.results[0].value as Writable
+    expect(transport.writableEnded).toBe(true)
+  })
+
   it.each([
     ['development', 'debug'],
     ['production', 'info'],
@@ -416,9 +424,13 @@ describe('createLogger', () => {
     const firstLogger = await createLogger(handler, { cleanup: firstCleanup })
     const task = mocks.schedule.mock.results[0].value
 
-    await expect(createLogger(handler, { cleanup: secondCleanup })).rejects.toThrow(
-      'Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.',
-    )
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(createLogger(handler, { cleanup: secondCleanup })).rejects.toThrow(
+        'Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.',
+      )
+    }
+    expect(mocks.transport).toHaveBeenCalledOnce()
+    expect(mocks.pino).toHaveBeenCalledOnce()
     expect(mocks.schedule).toHaveBeenCalledOnce()
     expect(task.stop).not.toHaveBeenCalled()
 
@@ -465,5 +477,6 @@ describe('createLogger', () => {
 
     await expect(createLogger(createHandler(), { cleanup: { enabled: true, ...cleanup } }))
       .rejects.toThrow('Invalid cron configuration')
+    expect((mocks.transport.mock.results[0].value as Writable).writableEnded).toBe(true)
   })
 })
