@@ -1,4 +1,5 @@
 import { pino } from 'pino'
+import { finished } from 'node:stream/promises'
 import cron from 'node-cron'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
 export * from './types'
@@ -53,17 +54,39 @@ export async function createLogger(
     }
   }
 
-  const logger = pino({
-    level: handler.environment === 'production' ? 'info' : 'debug',
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        ignore: 'pid,hostname',
-        translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
-      },
+  const cleanupSchedule = options.cleanup?.enabled
+    ? options.cleanup.schedule ?? '0 0 * * *'
+    : undefined;
+  const cleanupTimezone = options.cleanup?.timezone || undefined;
+  const existingRegistration = cleanupSchedule === undefined
+    ? undefined
+    : cleanupRegistrations.get(handler);
+  if (existingRegistration &&
+    (existingRegistration.schedule !== cleanupSchedule || existingRegistration.timezone !== cleanupTimezone)) {
+    throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
+  }
+
+  const transport = pino.transport({
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      ignore: 'pid,hostname',
+      translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
     },
   });
+  const disposeFailedTransport = (): void => {
+    void finished(transport).catch(() => undefined);
+    transport.end();
+  };
+  let logger: ReturnType<typeof pino>;
+  try {
+    logger = pino({
+      level: handler.environment === 'production' ? 'info' : 'debug',
+    }, transport);
+  } catch (error) {
+    disposeFailedTransport();
+    throw error;
+  }
 
   const logToConsole = (
     level: LogLevel,
@@ -89,8 +112,10 @@ export async function createLogger(
   };
 
   let pendingLogWrites = Promise.resolve();
+  const pendingReports = new Set<Promise<void>>();
   let pendingWriteCount = 0;
   let isClosed = false;
+  let closePromise: Promise<void> | undefined;
   const enqueueLog = (
     level: LogLevel,
     message: string,
@@ -101,22 +126,35 @@ export async function createLogger(
     }
 
     pendingWriteCount++;
+    let failed = false;
+    let failure: unknown;
     const write = pendingLogWrites
       .then(() => handler.saveLog(level, message, meta))
-      .catch(async (error: unknown) => {
-        await reportPersistenceError(error);
-        logToConsole('error', '[LOGGER] Failed to save log to database.', {
-          error,
-          level,
-          message,
-        });
+      .catch((error: unknown) => {
+        failed = true;
+        failure = error;
       })
       .finally(() => {
         pendingWriteCount--;
       });
 
     pendingLogWrites = write;
-    return write;
+    const completion = write.then(async () => {
+      if (failed) {
+        await reportPersistenceError(failure);
+        logToConsole('error', '[LOGGER] Failed to save log to database.', {
+          error: failure,
+          level,
+          message,
+        });
+      }
+    });
+    pendingReports.add(completion);
+    void completion.then(
+      () => pendingReports.delete(completion),
+      () => pendingReports.delete(completion),
+    );
+    return completion;
   };
 
   let cleanupRegistration: CleanupRegistration | undefined;
@@ -176,57 +214,81 @@ export async function createLogger(
       logToConsole('error', message, meta);
       return enqueueLog('error', message, meta);
     },
-    close: async (): Promise<void> => {
-      isClosed = true;
+    close: (): Promise<void> => {
+      if (closePromise) {
+        return closePromise;
+      }
+
       releaseCleanup();
-      await pendingLogWrites;
+      closePromise = (async () => {
+        try {
+          while (true) {
+            const queuedWrites = pendingLogWrites;
+            await queuedWrites;
+            await Promise.all([...pendingReports]);
+            if (queuedWrites === pendingLogWrites && pendingReports.size === 0) {
+              isClosed = true;
+              break;
+            }
+          }
+        } finally {
+          const transportFinished = finished(transport);
+          transport.end();
+          await transportFinished;
+        }
+      })();
+      return closePromise;
     },
   };
 
-  if (options.cleanup?.enabled) {
-    const schedule = options.cleanup.schedule ?? '0 0 * * *';
-    const timezone = options.cleanup.timezone || undefined;
-    const cronOptions = timezone
-      ? { timezone }
-      : undefined;
+  try {
+    if (cleanupSchedule !== undefined) {
+      const cronOptions = cleanupTimezone ? { timezone: cleanupTimezone } : undefined;
 
-    const existingRegistration = cleanupRegistrations.get(handler);
-    if (existingRegistration) {
-      if (existingRegistration.schedule !== schedule || existingRegistration.timezone !== timezone) {
-        throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
-      }
+      if (existingRegistration) {
+        cleanupRegistration = existingRegistration;
+        existingRegistration.owners.add(cleanupOwner);
+      } else {
+        const registration: CleanupRegistration = {
+          task: undefined as unknown as ReturnType<typeof cron.schedule>,
+          owners: new Set<CleanupOwner>([cleanupOwner]),
+          schedule: cleanupSchedule,
+          timezone: cleanupTimezone,
+        };
+        registration.task = cron.schedule(cleanupSchedule, async () => {
+          const owner = registration.owners.values().next().value as CleanupOwner | undefined;
+          if (!owner) {
+            return;
+          }
 
-      cleanupRegistration = existingRegistration;
-      existingRegistration.owners.add(cleanupOwner);
-    } else {
-      const registration: CleanupRegistration = {
-        task: undefined as unknown as ReturnType<typeof cron.schedule>,
-        owners: new Set<CleanupOwner>([cleanupOwner]),
-        schedule,
-        timezone,
-      };
-      registration.task = cron.schedule(schedule, async () => {
-        const owner = registration.owners.values().next().value as CleanupOwner | undefined;
-        if (!owner) {
-          return;
-        }
-
-        try {
-          const deletedLogs = await handler.cleanUpLogs();
-          await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
-        } catch (error) {
-          await owner.reportPersistenceError(error);
+          let deletedLogs: number;
           try {
-            await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
+            deletedLogs = await handler.cleanUpLogs();
+          } catch (error) {
+            await owner.reportPersistenceError(error);
+            try {
+              await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
+            } catch {
+              // The cleanup error has already been reported; a full queue cannot record it again.
+            }
+            return;
+          }
+
+          try {
+            await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
           } catch (logError) {
             await owner.reportPersistenceError(logError);
           }
-        }
-      }, cronOptions);
-      cleanupRegistrations.set(handler, registration);
-      cleanupRegistration = registration;
-      dbLogger.info(`Cron job scheduled for log cleanup: ${schedule}`);
+        }, cronOptions);
+        cleanupRegistrations.set(handler, registration);
+        cleanupRegistration = registration;
+        dbLogger.info(`Cron job scheduled for log cleanup: ${cleanupSchedule}`);
+      }
     }
+  } catch (error) {
+    releaseCleanup();
+    disposeFailedTransport();
+    throw error;
   }
 
   return dbLogger

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Writable } from 'node:stream'
 import { createLogger, PendingLogWritesLimitError } from '../src'
 import type { IDbLogHandler } from '../src/types'
 
 const mocks = vi.hoisted(() => ({
   pino: vi.fn(),
+  transport: vi.fn(),
   schedule: vi.fn(),
   consoleLogger: {
     debug: vi.fn(),
@@ -13,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('pino', () => ({ pino: mocks.pino }))
+vi.mock('pino', () => ({ pino: Object.assign(mocks.pino, { transport: mocks.transport }) }))
 vi.mock('node-cron', () => ({
   default: { schedule: mocks.schedule },
 }))
@@ -32,6 +34,9 @@ describe('createLogger', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.pino.mockReturnValue(mocks.consoleLogger)
+    mocks.transport.mockImplementation(() => new Writable({
+      write(_chunk, _encoding, callback) { callback() },
+    }))
     mocks.schedule.mockReturnValue({ stop: vi.fn() })
   })
 
@@ -96,6 +101,14 @@ describe('createLogger', () => {
     expect(mocks.pino).toHaveBeenCalledOnce()
   })
 
+  it('ends the transport when Pino creation fails', async () => {
+    mocks.pino.mockImplementationOnce(() => { throw new Error('Pino failed') })
+
+    await expect(createLogger(createHandler())).rejects.toThrow('Pino failed')
+    const transport = mocks.transport.mock.results[0].value as Writable
+    expect(transport.writableEnded).toBe(true)
+  })
+
   it.each([
     ['development', 'debug'],
     ['production', 'info'],
@@ -103,7 +116,67 @@ describe('createLogger', () => {
   ] as const)('configures the console level for %s', async (environment, level) => {
     await createLogger(createHandler(environment))
 
-    expect(mocks.pino).toHaveBeenCalledWith(expect.objectContaining({ level }))
+    expect(mocks.pino).toHaveBeenCalledWith(
+      expect.objectContaining({ level }),
+      mocks.transport.mock.results[0].value,
+    )
+  })
+
+  it('ends each transport once after its writes, even when close is called repeatedly', async () => {
+    const handler = createHandler()
+    let finishWrite!: () => void
+    vi.mocked(handler.saveLog).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishWrite = resolve }),
+    )
+    const first = await createLogger(handler)
+    const second = await createLogger(handler)
+    const firstEnd = vi.spyOn(mocks.transport.mock.results[0].value as Writable, 'end')
+    const secondEnd = vi.spyOn(mocks.transport.mock.results[1].value as Writable, 'end')
+
+    const write = first.info('pending')
+    await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+    const firstClose = first.close()
+    expect(first.close()).toBe(firstClose)
+    await second.close()
+    expect(firstEnd).not.toHaveBeenCalled()
+    expect(secondEnd).toHaveBeenCalledOnce()
+
+    finishWrite()
+    await Promise.all([write, firstClose])
+    expect(firstEnd).toHaveBeenCalledOnce()
+    await first.close()
+    expect(firstEnd).toHaveBeenCalledOnce()
+  })
+
+  it('waits for the transport finish event before resolving close', async () => {
+    let finishTransport!: () => void
+    mocks.transport.mockReturnValueOnce(new Writable({
+      write(_chunk, _encoding, callback) { callback() },
+      final(callback) { finishTransport = callback },
+    }))
+    const logger = await createLogger(createHandler())
+    let closed = false
+    const close = logger.close().then(() => { closed = true })
+    await vi.waitFor(() => expect(finishTransport).toBeTypeOf('function'))
+    expect(closed).toBe(false)
+    finishTransport()
+    await close
+    expect(closed).toBe(true)
+  })
+
+  it('returns a transport close error without ending it twice', async () => {
+    const failure = new Error('transport failed')
+    const transport = new Writable({
+      write(_chunk, _encoding, callback) { callback() },
+      final(callback) { callback(failure) },
+    })
+    mocks.transport.mockReturnValueOnce(transport)
+    const end = vi.spyOn(transport, 'end')
+    const logger = await createLogger(createHandler())
+
+    await expect(logger.close()).rejects.toBe(failure)
+    await expect(logger.close()).rejects.toBe(failure)
+    expect(end).toHaveBeenCalledOnce()
   })
 
   it('only persists debug logs in development', async () => {
@@ -155,6 +228,29 @@ describe('createLogger', () => {
     await expect(logger.error('Write failed')).resolves.toBeUndefined()
 
     expect(onPersistenceError).toHaveBeenCalledWith(error)
+  })
+
+  it('persists a log awaited by the error callback even when close is requested', async () => {
+    const handler = createHandler()
+    const failure = new Error('database unavailable')
+    let rejectFirst!: (error: Error) => void
+    vi.mocked(handler.saveLog).mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => { rejectFirst = reject }),
+    )
+    let logger!: Awaited<ReturnType<typeof createLogger>>
+    const onPersistenceError = vi.fn(async () => {
+      await logger.info('reported persistence failure')
+    })
+    logger = await createLogger(handler, { onPersistenceError, maxPendingWrites: 1 })
+
+    const firstWrite = logger.error('original log')
+    await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+    const close = logger.close()
+    rejectFirst(failure)
+
+    await Promise.all([firstWrite, close])
+    expect(onPersistenceError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(handler.saveLog).toHaveBeenNthCalledWith(2, 'info', 'reported persistence failure', undefined)
   })
 
   it('serializes concurrent writes and close waits for all of them', async () => {
@@ -328,9 +424,13 @@ describe('createLogger', () => {
     const firstLogger = await createLogger(handler, { cleanup: firstCleanup })
     const task = mocks.schedule.mock.results[0].value
 
-    await expect(createLogger(handler, { cleanup: secondCleanup })).rejects.toThrow(
-      'Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.',
-    )
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(createLogger(handler, { cleanup: secondCleanup })).rejects.toThrow(
+        'Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.',
+      )
+    }
+    expect(mocks.transport).toHaveBeenCalledOnce()
+    expect(mocks.pino).toHaveBeenCalledOnce()
     expect(mocks.schedule).toHaveBeenCalledOnce()
     expect(task.stop).not.toHaveBeenCalled()
 
@@ -361,6 +461,46 @@ describe('createLogger', () => {
     )
   })
 
+  it.each(['success', 'failure'] as const)(
+    'reports a %s cleanup correctly when the log queue is full',
+    async (outcome) => {
+      const handler = createHandler()
+      const cleanupError = new Error('cleanup unavailable')
+      if (outcome === 'failure') {
+        vi.mocked(handler.cleanUpLogs).mockRejectedValueOnce(cleanupError)
+      }
+      const onPersistenceError = vi.fn()
+      const logger = await createLogger(handler, {
+        cleanup: { enabled: true },
+        maxPendingWrites: 1,
+        onPersistenceError,
+      })
+      await vi.waitFor(async () => { await logger.info('drain scheduling log') })
+
+      let finishWrite!: () => void
+      vi.mocked(handler.saveLog).mockImplementationOnce(
+        () => new Promise<void>((resolve) => { finishWrite = resolve }),
+      )
+      const occupyingWrite = logger.info('occupy queue')
+      await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledTimes(3))
+      const callback = mocks.schedule.mock.calls[0][1] as () => Promise<void>
+      await callback()
+
+      expect(handler.cleanUpLogs).toHaveBeenCalledOnce()
+      expect(onPersistenceError).toHaveBeenCalledTimes(1)
+      if (outcome === 'success') {
+        expect(onPersistenceError.mock.calls[0][0]).toBeInstanceOf(PendingLogWritesLimitError)
+      } else {
+        expect(onPersistenceError).toHaveBeenCalledWith(cleanupError)
+      }
+      expect(handler.saveLog).toHaveBeenCalledTimes(3)
+
+      finishWrite()
+      await occupyingWrite
+      await logger.close()
+    },
+  )
+
   it.each([
     ['invalid cron expression', { schedule: 'not a cron expression' }],
     ['invalid timezone', { timezone: 'Not/A_Timezone' }],
@@ -377,5 +517,6 @@ describe('createLogger', () => {
 
     await expect(createLogger(createHandler(), { cleanup: { enabled: true, ...cleanup } }))
       .rejects.toThrow('Invalid cron configuration')
+    expect((mocks.transport.mock.results[0].value as Writable).writableEnded).toBe(true)
   })
 })

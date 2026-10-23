@@ -179,10 +179,11 @@ occurs. Handle rejections if calls are made without `await`, for example with
 
 Accepted writes run in order. A `saveLog` failure is reported through
 `onPersistenceError` and the console, and its log method resolves after that
-reporting completes. Its slot then becomes available. `close()` stops cleanup
-and waits for accepted writes and their error reporting, but does not retry
-rejected entries. It cannot finish while `saveLog` or an error callback remains
-blocked.
+reporting completes. Its slot becomes available when `saveLog` settles, so the
+error callback can await another log from the same logger. `close()` stops
+cleanup and waits for accepted writes, their error callbacks, and the console
+transport to finish, but does not retry rejected entries. It cannot finish
+while `saveLog`, an error callback, or the transport remains blocked.
 
 Cleanup is disabled by default. Set `options.cleanup.enabled` to `true` to enable it. The default schedule is `0 0 * * *`; provide `schedule` and `timezone` to customize it.
 
@@ -194,7 +195,7 @@ A `Promise` that resolves to a logger object with the following methods:
 - **`info(message, meta?)`**: Returns `Promise<void>` after persisting an informational log
 - **`warn(message, meta?)`**: Returns `Promise<void>` after persisting a warning log
 - **`error(message, meta?)`**: Returns `Promise<void>` after persisting an error log
-- **`close()`**: Returns `Promise<void>` after stopping the cleanup cron job and waiting for queued database writes
+- **`close()`**: Returns `Promise<void>` after stopping cleanup and waiting for database writes, error callbacks, and the console transport
 
 Await a logger method when the database write must complete before continuing.
 
@@ -236,7 +237,7 @@ const logger = await createLogger(handler, {
 });
 ```
 
-When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job and wait for pending log writes.
+When enabled, the cron job calls `handler.cleanUpLogs()` according to the configured schedule and timezone. Call `await logger.close()` during shutdown to stop the cron job and finish pending writes and the console transport. If the write queue is full, a cleanup result may not be saved as a log; `onPersistenceError` receives that write limit error once.
 
 Only one cleanup task is scheduled per handler, even when multiple loggers share
 that handler. All loggers sharing a handler must use the same effective schedule
