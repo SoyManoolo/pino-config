@@ -89,8 +89,10 @@ export async function createLogger(
   };
 
   let pendingLogWrites = Promise.resolve();
+  const pendingReports = new Set<Promise<void>>();
   let pendingWriteCount = 0;
   let isClosed = false;
+  let closePromise: Promise<void> | undefined;
   const enqueueLog = (
     level: LogLevel,
     message: string,
@@ -101,22 +103,35 @@ export async function createLogger(
     }
 
     pendingWriteCount++;
+    let failed = false;
+    let failure: unknown;
     const write = pendingLogWrites
       .then(() => handler.saveLog(level, message, meta))
-      .catch(async (error: unknown) => {
-        await reportPersistenceError(error);
-        logToConsole('error', '[LOGGER] Failed to save log to database.', {
-          error,
-          level,
-          message,
-        });
+      .catch((error: unknown) => {
+        failed = true;
+        failure = error;
       })
       .finally(() => {
         pendingWriteCount--;
       });
 
     pendingLogWrites = write;
-    return write;
+    const completion = write.then(async () => {
+      if (failed) {
+        await reportPersistenceError(failure);
+        logToConsole('error', '[LOGGER] Failed to save log to database.', {
+          error: failure,
+          level,
+          message,
+        });
+      }
+    });
+    pendingReports.add(completion);
+    void completion.then(
+      () => pendingReports.delete(completion),
+      () => pendingReports.delete(completion),
+    );
+    return completion;
   };
 
   let cleanupRegistration: CleanupRegistration | undefined;
@@ -176,10 +191,24 @@ export async function createLogger(
       logToConsole('error', message, meta);
       return enqueueLog('error', message, meta);
     },
-    close: async (): Promise<void> => {
-      isClosed = true;
+    close: (): Promise<void> => {
+      if (closePromise) {
+        return closePromise;
+      }
+
       releaseCleanup();
-      await pendingLogWrites;
+      closePromise = (async () => {
+        while (true) {
+          const queuedWrites = pendingLogWrites;
+          await queuedWrites;
+          await Promise.all([...pendingReports]);
+          if (queuedWrites === pendingLogWrites && pendingReports.size === 0) {
+            isClosed = true;
+            return;
+          }
+        }
+      })();
+      return closePromise;
     },
   };
 

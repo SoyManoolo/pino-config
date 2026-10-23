@@ -157,6 +157,29 @@ describe('createLogger', () => {
     expect(onPersistenceError).toHaveBeenCalledWith(error)
   })
 
+  it('persists a log awaited by the error callback even when close is requested', async () => {
+    const handler = createHandler()
+    const failure = new Error('database unavailable')
+    let rejectFirst!: (error: Error) => void
+    vi.mocked(handler.saveLog).mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => { rejectFirst = reject }),
+    )
+    let logger!: Awaited<ReturnType<typeof createLogger>>
+    const onPersistenceError = vi.fn(async () => {
+      await logger.info('reported persistence failure')
+    })
+    logger = await createLogger(handler, { onPersistenceError, maxPendingWrites: 1 })
+
+    const firstWrite = logger.error('original log')
+    await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+    const close = logger.close()
+    rejectFirst(failure)
+
+    await Promise.all([firstWrite, close])
+    expect(onPersistenceError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(handler.saveLog).toHaveBeenNthCalledWith(2, 'info', 'reported persistence failure', undefined)
+  })
+
   it('serializes concurrent writes and close waits for all of them', async () => {
     const handler = createHandler()
     const calls: string[] = []
