@@ -461,6 +461,46 @@ describe('createLogger', () => {
     )
   })
 
+  it.each(['success', 'failure'] as const)(
+    'reports a %s cleanup correctly when the log queue is full',
+    async (outcome) => {
+      const handler = createHandler()
+      const cleanupError = new Error('cleanup unavailable')
+      if (outcome === 'failure') {
+        vi.mocked(handler.cleanUpLogs).mockRejectedValueOnce(cleanupError)
+      }
+      const onPersistenceError = vi.fn()
+      const logger = await createLogger(handler, {
+        cleanup: { enabled: true },
+        maxPendingWrites: 1,
+        onPersistenceError,
+      })
+      await vi.waitFor(async () => { await logger.info('drain scheduling log') })
+
+      let finishWrite!: () => void
+      vi.mocked(handler.saveLog).mockImplementationOnce(
+        () => new Promise<void>((resolve) => { finishWrite = resolve }),
+      )
+      const occupyingWrite = logger.info('occupy queue')
+      await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledTimes(3))
+      const callback = mocks.schedule.mock.calls[0][1] as () => Promise<void>
+      await callback()
+
+      expect(handler.cleanUpLogs).toHaveBeenCalledOnce()
+      expect(onPersistenceError).toHaveBeenCalledTimes(1)
+      if (outcome === 'success') {
+        expect(onPersistenceError.mock.calls[0][0]).toBeInstanceOf(PendingLogWritesLimitError)
+      } else {
+        expect(onPersistenceError).toHaveBeenCalledWith(cleanupError)
+      }
+      expect(handler.saveLog).toHaveBeenCalledTimes(3)
+
+      finishWrite()
+      await occupyingWrite
+      await logger.close()
+    },
+  )
+
   it.each([
     ['invalid cron expression', { schedule: 'not a cron expression' }],
     ['invalid timezone', { timezone: 'Not/A_Timezone' }],

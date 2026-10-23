@@ -261,16 +261,23 @@ export async function createLogger(
             return;
           }
 
+          let deletedLogs: number;
           try {
-            const deletedLogs = await handler.cleanUpLogs();
-            await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
+            deletedLogs = await handler.cleanUpLogs();
           } catch (error) {
             await owner.reportPersistenceError(error);
             try {
               await owner.log('error', '[CRON] Error in cron job deleting old logs:', { error });
-            } catch (logError) {
-              await owner.reportPersistenceError(logError);
+            } catch {
+              // The cleanup error has already been reported; a full queue cannot record it again.
             }
+            return;
+          }
+
+          try {
+            await owner.log('info', `[CRON] Logs cleanup executed. Deleted ${deletedLogs} logs.`);
+          } catch (logError) {
+            await owner.reportPersistenceError(logError);
           }
         }, cronOptions);
         cleanupRegistrations.set(handler, registration);
