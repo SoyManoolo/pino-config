@@ -1,4 +1,5 @@
 import { pino } from 'pino'
+import { finished } from 'node:stream/promises'
 import cron from 'node-cron'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
 export * from './types'
@@ -53,17 +54,17 @@ export async function createLogger(
     }
   }
 
-  const logger = pino({
-    level: handler.environment === 'production' ? 'info' : 'debug',
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        ignore: 'pid,hostname',
-        translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
-      },
+  const transport = pino.transport({
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      ignore: 'pid,hostname',
+      translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
     },
   });
+  const logger = pino({
+    level: handler.environment === 'production' ? 'info' : 'debug',
+  }, transport);
 
   const logToConsole = (
     level: LogLevel,
@@ -198,14 +199,20 @@ export async function createLogger(
 
       releaseCleanup();
       closePromise = (async () => {
-        while (true) {
-          const queuedWrites = pendingLogWrites;
-          await queuedWrites;
-          await Promise.all([...pendingReports]);
-          if (queuedWrites === pendingLogWrites && pendingReports.size === 0) {
-            isClosed = true;
-            return;
+        try {
+          while (true) {
+            const queuedWrites = pendingLogWrites;
+            await queuedWrites;
+            await Promise.all([...pendingReports]);
+            if (queuedWrites === pendingLogWrites && pendingReports.size === 0) {
+              isClosed = true;
+              break;
+            }
           }
+        } finally {
+          const transportFinished = finished(transport);
+          transport.end();
+          await transportFinished;
         }
       })();
       return closePromise;

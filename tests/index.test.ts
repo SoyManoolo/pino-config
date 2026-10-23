@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Writable } from 'node:stream'
 import { createLogger, PendingLogWritesLimitError } from '../src'
 import type { IDbLogHandler } from '../src/types'
 
 const mocks = vi.hoisted(() => ({
   pino: vi.fn(),
+  transport: vi.fn(),
   schedule: vi.fn(),
   consoleLogger: {
     debug: vi.fn(),
@@ -13,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('pino', () => ({ pino: mocks.pino }))
+vi.mock('pino', () => ({ pino: Object.assign(mocks.pino, { transport: mocks.transport }) }))
 vi.mock('node-cron', () => ({
   default: { schedule: mocks.schedule },
 }))
@@ -32,6 +34,9 @@ describe('createLogger', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.pino.mockReturnValue(mocks.consoleLogger)
+    mocks.transport.mockImplementation(() => new Writable({
+      write(_chunk, _encoding, callback) { callback() },
+    }))
     mocks.schedule.mockReturnValue({ stop: vi.fn() })
   })
 
@@ -103,7 +108,67 @@ describe('createLogger', () => {
   ] as const)('configures the console level for %s', async (environment, level) => {
     await createLogger(createHandler(environment))
 
-    expect(mocks.pino).toHaveBeenCalledWith(expect.objectContaining({ level }))
+    expect(mocks.pino).toHaveBeenCalledWith(
+      expect.objectContaining({ level }),
+      mocks.transport.mock.results[0].value,
+    )
+  })
+
+  it('ends each transport once after its writes, even when close is called repeatedly', async () => {
+    const handler = createHandler()
+    let finishWrite!: () => void
+    vi.mocked(handler.saveLog).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishWrite = resolve }),
+    )
+    const first = await createLogger(handler)
+    const second = await createLogger(handler)
+    const firstEnd = vi.spyOn(mocks.transport.mock.results[0].value as Writable, 'end')
+    const secondEnd = vi.spyOn(mocks.transport.mock.results[1].value as Writable, 'end')
+
+    const write = first.info('pending')
+    await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+    const firstClose = first.close()
+    expect(first.close()).toBe(firstClose)
+    await second.close()
+    expect(firstEnd).not.toHaveBeenCalled()
+    expect(secondEnd).toHaveBeenCalledOnce()
+
+    finishWrite()
+    await Promise.all([write, firstClose])
+    expect(firstEnd).toHaveBeenCalledOnce()
+    await first.close()
+    expect(firstEnd).toHaveBeenCalledOnce()
+  })
+
+  it('waits for the transport finish event before resolving close', async () => {
+    let finishTransport!: () => void
+    mocks.transport.mockReturnValueOnce(new Writable({
+      write(_chunk, _encoding, callback) { callback() },
+      final(callback) { finishTransport = callback },
+    }))
+    const logger = await createLogger(createHandler())
+    let closed = false
+    const close = logger.close().then(() => { closed = true })
+    await vi.waitFor(() => expect(finishTransport).toBeTypeOf('function'))
+    expect(closed).toBe(false)
+    finishTransport()
+    await close
+    expect(closed).toBe(true)
+  })
+
+  it('returns a transport close error without ending it twice', async () => {
+    const failure = new Error('transport failed')
+    const transport = new Writable({
+      write(_chunk, _encoding, callback) { callback() },
+      final(callback) { callback(failure) },
+    })
+    mocks.transport.mockReturnValueOnce(transport)
+    const end = vi.spyOn(transport, 'end')
+    const logger = await createLogger(createHandler())
+
+    await expect(logger.close()).rejects.toBe(failure)
+    await expect(logger.close()).rejects.toBe(failure)
+    expect(end).toHaveBeenCalledOnce()
   })
 
   it('only persists debug logs in development', async () => {
