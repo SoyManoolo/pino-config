@@ -79,6 +79,13 @@ async function main() {
 void main();
 ```
 
+## Migrating to 3.0.0
+
+Version 3 requires Node.js 20 or later. It upgrades Pino to version 10 and
+replaces `node-cron` with `croner` for the optional cleanup job. Cleanup options
+are unchanged: `schedule` still accepts five- or six-field cron expressions, and
+invalid expressions or timezones still make `createLogger` reject.
+
 ## Migrating to 2.0.0
 
 Version 2 narrows the `environment` type to `Environment` (`'development'`,
@@ -319,7 +326,8 @@ This package is written in TypeScript and includes full type definitions. No nee
 ## Dependencies
 
 - **pino**: Fast and low overhead logging library
-- **node-cron**: Cron job scheduler for automatic log cleanup
+- **pino-pretty**: Console formatting for the Pino transport
+- **croner**: Dependency-free cron scheduler for automatic log cleanup
 
 ## Roadmap
 

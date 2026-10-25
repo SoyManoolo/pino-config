@@ -11,6 +11,7 @@ export default defineConfig({
     }),
   ],
   build: {
+    minify: false,
     lib: {
       entry: resolve(__dirname, 'src/index.ts'), // Tu punto de entrada
       name: 'PinoConfig',
@@ -19,7 +20,7 @@ export default defineConfig({
     },
     // Excluir dependencias externas para que no se incluyan en el bundle final
     rollupOptions: {
-      external: ['pino', 'node-cron', 'node:stream/promises'],
+      external: ['pino', 'croner', 'node:stream/promises'],
     },
   },
 });

@@ -1,10 +1,13 @@
 {
   "name": "pino-config",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "Custom Pino configuration for database logging.",
   "type": "commonjs",
   "main": "./dist/index.cjs.js",
   "types": "./dist/index.d.ts",
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist"
   ],
@@ -37,8 +40,8 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "node-cron": "^4.2.1",
-    "pino": "^8.0.0",
+    "croner": "^10.0.1",
+    "pino": "^10.4.0",
     "pino-pretty": "^13.0.0"
   }
 }

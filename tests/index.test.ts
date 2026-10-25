@@ -16,8 +16,10 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('pino', () => ({ pino: Object.assign(mocks.pino, { transport: mocks.transport }) }))
-vi.mock('node-cron', () => ({
-  default: { schedule: mocks.schedule },
+vi.mock('croner', () => ({
+  Cron: vi.fn(function (pattern: string, options: unknown, callback: () => unknown) {
+    return mocks.schedule(pattern, callback, options)
+  }),
 }))
 
 function createHandler(
@@ -504,7 +506,7 @@ describe('createLogger', () => {
   it.each([
     ['invalid cron expression', { schedule: 'not a cron expression' }],
     ['invalid timezone', { timezone: 'Not/A_Timezone' }],
-  ])('propagates %s errors from node-cron', async (_description, cleanup) => {
+  ])('propagates %s errors from croner', async (_description, cleanup) => {
     mocks.schedule.mockImplementationOnce((schedule, _callback, options) => {
       const matchesSchedule = 'schedule' in cleanup && schedule === cleanup.schedule
       const matchesTimezone = 'timezone' in cleanup && options?.timezone === cleanup.timezone

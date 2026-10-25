@@ -1,6 +1,6 @@
 import { pino } from 'pino'
 import { finished } from 'node:stream/promises'
-import cron from 'node-cron'
+import { Cron } from 'croner'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
 export * from './types'
 
@@ -10,7 +10,7 @@ interface CleanupOwner {
 }
 
 interface CleanupRegistration {
-  task: ReturnType<typeof cron.schedule>;
+  task: Cron;
   owners: Set<CleanupOwner>;
   schedule: string;
   timezone: string | undefined;
@@ -74,8 +74,10 @@ export async function createLogger(
       translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
     },
   });
+  // ThreadStream is a writable stream at runtime, but its typings do not extend Node's stream types.
+  const transportFinished = (): Promise<void> => finished(transport as unknown as NodeJS.WritableStream);
   const disposeFailedTransport = (): void => {
-    void finished(transport).catch(() => undefined);
+    void transportFinished().catch(() => undefined);
     transport.end();
   };
   let logger: ReturnType<typeof pino>;
@@ -232,9 +234,9 @@ export async function createLogger(
             }
           }
         } finally {
-          const transportFinished = finished(transport);
+          const transportClosed = transportFinished();
           transport.end();
-          await transportFinished;
+          await transportClosed;
         }
       })();
       return closePromise;
@@ -250,12 +252,12 @@ export async function createLogger(
         existingRegistration.owners.add(cleanupOwner);
       } else {
         const registration: CleanupRegistration = {
-          task: undefined as unknown as ReturnType<typeof cron.schedule>,
+          task: undefined as unknown as Cron,
           owners: new Set<CleanupOwner>([cleanupOwner]),
           schedule: cleanupSchedule,
           timezone: cleanupTimezone,
         };
-        registration.task = cron.schedule(cleanupSchedule, async () => {
+        registration.task = new Cron(cleanupSchedule, cronOptions, async () => {
           const owner = registration.owners.values().next().value as CleanupOwner | undefined;
           if (!owner) {
             return;
@@ -279,7 +281,7 @@ export async function createLogger(
           } catch (logError) {
             await owner.reportPersistenceError(logError);
           }
-        }, cronOptions);
+        });
         cleanupRegistrations.set(handler, registration);
         cleanupRegistration = registration;
         dbLogger.info(`Cron job scheduled for log cleanup: ${cleanupSchedule}`);
