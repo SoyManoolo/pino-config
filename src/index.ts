@@ -71,7 +71,7 @@ export async function createLogger(
     options: {
       colorize: true,
       ignore: 'pid,hostname',
-      translateTime: 'yyyy-mm-dd HH:MM:ss.SSS',
+      translateTime: 'yyyy-mm-dd HH:MM:ss.l',
     },
   });
   // ThreadStream is a writable stream at runtime, but its typings do not extend Node's stream types.
