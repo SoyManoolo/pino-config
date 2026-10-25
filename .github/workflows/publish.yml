@@ -1,0 +1,74 @@
+name: Publish package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-package-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check that the tag and package versions match
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          [[ "$tag_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$tag_version" = "$package_version"
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Check formatting
+        run: npm run format:check
+      - name: Run tests
+        run: npm test
+      - name: Inspect the package contents
+        run: npm pack --dry-run
+
+  publish:
+    name: Publish npm package and GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Confirm npm supports trusted publishing
+        shell: bash
+        run: |
+          npm_version="$(npm --version)"
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              throw new Error(`npm ${process.argv[1]} does not support trusted publishing`);
+            }
+          ' "$npm_version"
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Publish the public package through npm trusted publishing
+        run: npm publish
+      - name: Create the GitHub Release
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

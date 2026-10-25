@@ -2,6 +2,14 @@
   "name": "pino-config",
   "version": "3.0.0",
   "description": "Custom Pino configuration for database logging.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SoyManoolo/pino-config.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SoyManoolo/pino-config/issues"
+  },
+  "homepage": "https://github.com/SoyManoolo/pino-config#readme",
   "type": "commonjs",
   "main": "./dist/index.cjs.js",
   "types": "./dist/index.d.ts",
