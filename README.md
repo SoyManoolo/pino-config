@@ -194,6 +194,9 @@ cleanup, rejects new log calls except those made by an active error callback,
 and waits for accepted writes, their error callbacks, and the console
 transport to finish, but does not retry rejected entries. It cannot finish
 while `saveLog`, an error callback, or the transport remains blocked.
+An error callback can await `close()`. Its call waits for the transport to
+finish while allowing callbacks on the same asynchronous call chain to finish
+afterward. Calls to `close()` from outside callbacks still await all callbacks.
 
 Cleanup is disabled by default. Set `options.cleanup.enabled` to `true` to enable it. The default schedule is `0 0 * * *`; provide `schedule` and `timezone` to customize it.
 
