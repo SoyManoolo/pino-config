@@ -255,6 +255,118 @@ describe('createLogger', () => {
     expect(handler.saveLog).toHaveBeenNthCalledWith(2, 'info', 'reported persistence failure', undefined)
   })
 
+  it('bounds concurrent persistence error callbacks independently of queued writes', async () => {
+    const handler = createHandler()
+    const failure = new Error('database unavailable')
+    vi.mocked(handler.saveLog).mockRejectedValue(failure)
+    let finishCallback!: () => void
+    const onPersistenceError = vi.fn().mockImplementationOnce(() =>
+      new Promise<void>((resolve) => { finishCallback = resolve }),
+    )
+    const logger = await createLogger(handler, { maxPendingWrites: 1, onPersistenceError })
+
+    const first = logger.info('first failure')
+    await vi.waitFor(() => expect(onPersistenceError).toHaveBeenCalledOnce())
+    for (let index = 0; index < 10; index++) {
+      await logger.info('another failure')
+    }
+
+    expect(onPersistenceError).toHaveBeenCalledOnce()
+    expect(mocks.consoleLogger.error).toHaveBeenCalledWith(
+      { error: failure, limit: 1 }, '[LOGGER] Persistence error callback limit reached.',
+    )
+    finishCallback()
+    await first
+    await logger.info('callback capacity restored')
+    expect(onPersistenceError).toHaveBeenCalledTimes(2)
+    await logger.close()
+  })
+
+  it.each(['debug', 'info', 'warn', 'error'] as const)(
+    'rejects new %s calls as soon as close starts',
+    async (level) => {
+      const handler = createHandler()
+      let finishWrite!: () => void
+      vi.mocked(handler.saveLog).mockImplementationOnce(() =>
+        new Promise<void>((resolve) => { finishWrite = resolve }),
+      )
+      const logger = await createLogger(handler)
+      const accepted = logger.info('before close')
+      await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+
+      const close = logger.close()
+      await expect(logger[level]('during close')).rejects.toThrow('Logger is closed.')
+      finishWrite()
+      await Promise.all([accepted, close])
+      expect(handler.saveLog).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('closes from an error callback while an outside close waits for that callback', async () => {
+    const handler = createHandler()
+    vi.mocked(handler.saveLog).mockRejectedValueOnce(new Error('database unavailable'))
+    let finishCallback!: () => void
+    const callbackGate = new Promise<void>((resolve) => { finishCallback = resolve })
+    let callbackCloseFinished = false
+    const logger = await createLogger(handler, {
+      onPersistenceError: async () => {
+        await logger.close()
+        callbackCloseFinished = true
+        await callbackGate
+      },
+    })
+    const transport = mocks.transport.mock.results[0].value as Writable
+    const end = vi.spyOn(transport, 'end')
+
+    const log = logger.info('failed log')
+    let outsideCloseFinished = false
+    const close = logger.close().then(() => { outsideCloseFinished = true })
+    await vi.waitFor(() => expect(callbackCloseFinished).toBe(true))
+    expect(outsideCloseFinished).toBe(false)
+    expect(end).toHaveBeenCalledOnce()
+    finishCallback()
+    await Promise.all([log, close])
+    expect(outsideCloseFinished).toBe(true)
+    expect(end).toHaveBeenCalledOnce()
+  })
+
+  it('drains other callbacks until they finish or also request close', async () => {
+    const handler = createHandler()
+    vi.mocked(handler.saveLog).mockRejectedValue(new Error('database unavailable'))
+    let closeFromSecond!: () => void
+    const secondCallbackGate = new Promise<void>((resolve) => { closeFromSecond = resolve })
+    const onPersistenceError = vi.fn()
+      .mockImplementationOnce(async () => { await logger.close() })
+      .mockImplementationOnce(async () => {
+        await secondCallbackGate
+        await logger.close()
+      })
+    const logger = await createLogger(handler, { onPersistenceError })
+    const transport = mocks.transport.mock.results[0].value as Writable
+    const end = vi.spyOn(transport, 'end')
+
+    const first = logger.info('first failure')
+    const second = logger.info('second failure')
+    await vi.waitFor(() => expect(onPersistenceError).toHaveBeenCalledTimes(2))
+    expect(end).not.toHaveBeenCalled()
+    closeFromSecond()
+    await Promise.all([first, second, logger.close()])
+    expect(end).toHaveBeenCalledOnce()
+  })
+
+  it('closes when a nested error callback is awaited by its parent callback', async () => {
+    const handler = createHandler()
+    vi.mocked(handler.saveLog).mockRejectedValue(new Error('database unavailable'))
+    const onPersistenceError = vi.fn()
+      .mockImplementationOnce(async () => { await logger.info('nested failure') })
+      .mockImplementationOnce(async () => { await logger.close() })
+    const logger = await createLogger(handler, { onPersistenceError })
+
+    await logger.info('original failure')
+    await logger.close()
+    expect(onPersistenceError).toHaveBeenCalledTimes(2)
+  })
+
   it('serializes concurrent writes and close waits for all of them', async () => {
     const handler = createHandler()
     const calls: string[] = []

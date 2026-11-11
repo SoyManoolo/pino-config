@@ -1,4 +1,5 @@
 import { pino } from 'pino'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { finished } from 'node:stream/promises'
 import { Cron } from 'croner'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
@@ -14,6 +15,13 @@ interface CleanupRegistration {
   owners: Set<CleanupOwner>;
   schedule: string;
   timezone: string | undefined;
+}
+
+interface PersistenceCallback {
+  parent: PersistenceCallback | undefined;
+  waitingForClose: boolean;
+  readyToClose: Promise<void>;
+  unblockClose(): void;
 }
 
 const cleanupRegistrations = new WeakMap<IDbLogHandler, CleanupRegistration>()
@@ -103,21 +111,61 @@ export async function createLogger(
     }
   };
 
-  const reportPersistenceError = async (error: unknown): Promise<void> => {
-    try {
-      await options.onPersistenceError?.(error);
-    } catch (callbackError) {
-      logToConsole('error', '[LOGGER] Persistence error callback failed.', {
-        error: callbackError,
-      });
+  let isClosing = false;
+  let isClosed = false;
+  const callbackContext = new AsyncLocalStorage<PersistenceCallback>();
+  const pendingErrorCallbacks = new Map<PersistenceCallback, Promise<void>>();
+  const reportPersistenceError = (error: unknown): Promise<void> => {
+    const onPersistenceError = options.onPersistenceError;
+    if (!onPersistenceError) {
+      return Promise.resolve();
     }
+
+    if (pendingErrorCallbacks.size >= maxPendingWrites) {
+      logToConsole('error', '[LOGGER] Persistence error callback limit reached.', {
+        error,
+        limit: maxPendingWrites,
+      });
+      return Promise.resolve();
+    }
+
+    let unblockClose!: () => void;
+    const readyToClose = new Promise<void>((resolve) => { unblockClose = resolve; });
+    const callback: PersistenceCallback = {
+      parent: callbackContext.getStore(),
+      waitingForClose: false,
+      readyToClose,
+      unblockClose,
+    };
+    const completion = Promise.resolve().then(async () => {
+      try {
+        await callbackContext.run(callback, () => onPersistenceError.call(options, error));
+      } catch (callbackError) {
+        const message = '[LOGGER] Persistence error callback failed.';
+        if (isClosed) {
+          console.error(message, callbackError);
+        } else {
+          logToConsole('error', message, { error: callbackError });
+        }
+      } finally {
+        pendingErrorCallbacks.delete(callback);
+        callback.parent = undefined;
+        callback.unblockClose();
+      }
+    });
+    pendingErrorCallbacks.set(callback, completion);
+    return completion;
   };
 
   let pendingLogWrites = Promise.resolve();
-  const pendingReports = new Set<Promise<void>>();
   let pendingWriteCount = 0;
-  let isClosed = false;
+  let transportClosePromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
+  const activeCallback = (): PersistenceCallback | undefined => {
+    const callback = callbackContext.getStore();
+    return callback && pendingErrorCallbacks.has(callback) ? callback : undefined;
+  };
+  const acceptsPublicLogs = () => !isClosed && (!isClosing || activeCallback() !== undefined);
   const enqueueLog = (
     level: LogLevel,
     message: string,
@@ -141,28 +189,22 @@ export async function createLogger(
       });
 
     pendingLogWrites = write;
-    const completion = write.then(async () => {
+    return write.then(async () => {
       if (failed) {
-        await reportPersistenceError(failure);
         logToConsole('error', '[LOGGER] Failed to save log to database.', {
           error: failure,
           level,
           message,
         });
+        await reportPersistenceError(failure);
       }
     });
-    pendingReports.add(completion);
-    void completion.then(
-      () => pendingReports.delete(completion),
-      () => pendingReports.delete(completion),
-    );
-    return completion;
   };
 
   let cleanupRegistration: CleanupRegistration | undefined;
   const cleanupOwner: CleanupOwner = {
-    log: enqueueLog,
-    reportPersistenceError,
+    log: (level, message, meta) => isClosing ? Promise.resolve() : enqueueLog(level, message, meta),
+    reportPersistenceError: (error) => isClosing ? Promise.resolve() : reportPersistenceError(error),
   };
   const releaseCleanup = (): void => {
     if (!cleanupRegistration) {
@@ -181,7 +223,7 @@ export async function createLogger(
   // Configuración e implementación de debug, info, warn y error
   const dbLogger: Logger = {
     debug: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -193,7 +235,7 @@ export async function createLogger(
       return Promise.resolve();
     },
     info: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -201,7 +243,7 @@ export async function createLogger(
       return enqueueLog('info', message, meta);
     },
     warn: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -209,7 +251,7 @@ export async function createLogger(
       return enqueueLog('warn', message, meta);
     },
     error: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -217,29 +259,40 @@ export async function createLogger(
       return enqueueLog('error', message, meta);
     },
     close: (): Promise<void> => {
-      if (closePromise) {
-        return closePromise;
+      const callback = activeCallback();
+      // A callback may await a log whose own error callback asks to close.
+      for (let current = callback; current; current = current.parent) {
+        current.waitingForClose = true;
+        current.unblockClose();
       }
 
-      releaseCleanup();
-      closePromise = (async () => {
-        try {
-          while (true) {
-            const queuedWrites = pendingLogWrites;
-            await queuedWrites;
-            await Promise.all([...pendingReports]);
-            if (queuedWrites === pendingLogWrites && pendingReports.size === 0) {
-              isClosed = true;
-              break;
+      if (!transportClosePromise) {
+        isClosing = true;
+        releaseCleanup();
+        transportClosePromise = (async () => {
+          try {
+            while (true) {
+              const queuedWrites = pendingLogWrites;
+              await queuedWrites;
+              await Promise.all([...pendingErrorCallbacks.keys()].map((report) => report.readyToClose));
+              const callbacksReady = [...pendingErrorCallbacks.keys()].every((report) => report.waitingForClose);
+              if (queuedWrites === pendingLogWrites && callbacksReady) {
+                break;
+              }
             }
+          } finally {
+            isClosed = true;
+            const transportClosed = transportFinished();
+            transport.end();
+            await transportClosed;
           }
-        } finally {
-          const transportClosed = transportFinished();
-          transport.end();
-          await transportClosed;
-        }
-      })();
-      return closePromise;
+        })();
+      }
+
+      // Only callers outside error callbacks wait for callbacks that are themselves closing.
+      return callback
+        ? transportClosePromise
+        : closePromise ??= transportClosePromise.finally(() => Promise.all(pendingErrorCallbacks.values()));
     },
   };
 

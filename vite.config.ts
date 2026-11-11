@@ -20,7 +20,7 @@ export default defineConfig({
     },
     // Excluir dependencias externas para que no se incluyan en el bundle final
     rollupOptions: {
-      external: ['pino', 'croner', 'node:stream/promises'],
+      external: ['pino', 'croner', 'node:async_hooks', 'node:stream/promises'],
     },
   },
 });
