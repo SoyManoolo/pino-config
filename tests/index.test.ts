@@ -282,6 +282,26 @@ describe('createLogger', () => {
     await logger.close()
   })
 
+  it.each(['debug', 'info', 'warn', 'error'] as const)(
+    'rejects new %s calls as soon as close starts',
+    async (level) => {
+      const handler = createHandler()
+      let finishWrite!: () => void
+      vi.mocked(handler.saveLog).mockImplementationOnce(() =>
+        new Promise<void>((resolve) => { finishWrite = resolve }),
+      )
+      const logger = await createLogger(handler)
+      const accepted = logger.info('before close')
+      await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+
+      const close = logger.close()
+      await expect(logger[level]('during close')).rejects.toThrow('Logger is closed.')
+      finishWrite()
+      await Promise.all([accepted, close])
+      expect(handler.saveLog).toHaveBeenCalledOnce()
+    },
+  )
+
   it('serializes concurrent writes and close waits for all of them', async () => {
     const handler = createHandler()
     const calls: string[] = []

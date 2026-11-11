@@ -1,4 +1,5 @@
 import { pino } from 'pino'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { finished } from 'node:stream/promises'
 import { Cron } from 'croner'
 import { IDbLogHandler, Logger, LoggerOptions, LogLevel } from './types'
@@ -103,6 +104,7 @@ export async function createLogger(
     }
   };
 
+  const callbackContext = new AsyncLocalStorage<{ active: boolean }>();
   let pendingErrorCallbacks = 0;
   const reportPersistenceError = async (error: unknown): Promise<void> => {
     if (!options.onPersistenceError) {
@@ -117,14 +119,16 @@ export async function createLogger(
       return;
     }
 
+    const callback = { active: true };
     pendingErrorCallbacks++;
     try {
-      await options.onPersistenceError(error);
+      await callbackContext.run(callback, options.onPersistenceError, error);
     } catch (callbackError) {
       logToConsole('error', '[LOGGER] Persistence error callback failed.', {
         error: callbackError,
       });
     } finally {
+      callback.active = false;
       pendingErrorCallbacks--;
     }
   };
@@ -132,8 +136,10 @@ export async function createLogger(
   let pendingLogWrites = Promise.resolve();
   const pendingReports = new Set<Promise<void>>();
   let pendingWriteCount = 0;
+  let isClosing = false;
   let isClosed = false;
   let closePromise: Promise<void> | undefined;
+  const acceptsPublicLogs = () => !isClosed && (!isClosing || callbackContext.getStore()?.active);
   const enqueueLog = (
     level: LogLevel,
     message: string,
@@ -197,7 +203,7 @@ export async function createLogger(
   // Configuración e implementación de debug, info, warn y error
   const dbLogger: Logger = {
     debug: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -209,7 +215,7 @@ export async function createLogger(
       return Promise.resolve();
     },
     info: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -217,7 +223,7 @@ export async function createLogger(
       return enqueueLog('info', message, meta);
     },
     warn: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -225,7 +231,7 @@ export async function createLogger(
       return enqueueLog('warn', message, meta);
     },
     error: (message: string, meta?: Record<string, unknown>): Promise<void> => {
-      if (isClosed) {
+      if (!acceptsPublicLogs()) {
         return Promise.reject(new Error('Logger is closed.'));
       }
 
@@ -237,6 +243,7 @@ export async function createLogger(
         return closePromise;
       }
 
+      isClosing = true;
       releaseCleanup();
       closePromise = (async () => {
         try {

@@ -190,7 +190,8 @@ reporting completes. Its slot becomes available when `saveLog` settles, so the
 error callback can await another log from the same logger. The same limit
 applies independently to active error callbacks. When all callback slots are
 busy, the logger reports the failure and saturation to the console. `close()` stops
-cleanup and waits for accepted writes, their error callbacks, and the console
+cleanup, rejects new log calls except those made by an active error callback,
+and waits for accepted writes, their error callbacks, and the console
 transport to finish, but does not retry rejected entries. It cannot finish
 while `saveLog`, an error callback, or the transport remains blocked.
 
