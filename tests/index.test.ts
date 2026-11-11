@@ -255,6 +255,33 @@ describe('createLogger', () => {
     expect(handler.saveLog).toHaveBeenNthCalledWith(2, 'info', 'reported persistence failure', undefined)
   })
 
+  it('bounds concurrent persistence error callbacks independently of queued writes', async () => {
+    const handler = createHandler()
+    const failure = new Error('database unavailable')
+    vi.mocked(handler.saveLog).mockRejectedValue(failure)
+    let finishCallback!: () => void
+    const onPersistenceError = vi.fn().mockImplementationOnce(() =>
+      new Promise<void>((resolve) => { finishCallback = resolve }),
+    )
+    const logger = await createLogger(handler, { maxPendingWrites: 1, onPersistenceError })
+
+    const first = logger.info('first failure')
+    await vi.waitFor(() => expect(onPersistenceError).toHaveBeenCalledOnce())
+    for (let index = 0; index < 10; index++) {
+      await logger.info('another failure')
+    }
+
+    expect(onPersistenceError).toHaveBeenCalledOnce()
+    expect(mocks.consoleLogger.error).toHaveBeenCalledWith(
+      { error: failure, limit: 1 }, '[LOGGER] Persistence error callback limit reached.',
+    )
+    finishCallback()
+    await first
+    await logger.info('callback capacity restored')
+    expect(onPersistenceError).toHaveBeenCalledTimes(2)
+    await logger.close()
+  })
+
   it('serializes concurrent writes and close waits for all of them', async () => {
     const handler = createHandler()
     const calls: string[] = []

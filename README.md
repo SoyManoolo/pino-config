@@ -187,7 +187,9 @@ occurs. Handle rejections if calls are made without `await`, for example with
 Accepted writes run in order. A `saveLog` failure is reported through
 `onPersistenceError` and the console, and its log method resolves after that
 reporting completes. Its slot becomes available when `saveLog` settles, so the
-error callback can await another log from the same logger. `close()` stops
+error callback can await another log from the same logger. The same limit
+applies independently to active error callbacks. When all callback slots are
+busy, the logger reports the failure and saturation to the console. `close()` stops
 cleanup and waits for accepted writes, their error callbacks, and the console
 transport to finish, but does not retry rejected entries. It cannot finish
 while `saveLog`, an error callback, or the transport remains blocked.

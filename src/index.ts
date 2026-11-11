@@ -103,13 +103,29 @@ export async function createLogger(
     }
   };
 
+  let pendingErrorCallbacks = 0;
   const reportPersistenceError = async (error: unknown): Promise<void> => {
+    if (!options.onPersistenceError) {
+      return;
+    }
+
+    if (pendingErrorCallbacks >= maxPendingWrites) {
+      logToConsole('error', '[LOGGER] Persistence error callback limit reached.', {
+        error,
+        limit: maxPendingWrites,
+      });
+      return;
+    }
+
+    pendingErrorCallbacks++;
     try {
-      await options.onPersistenceError?.(error);
+      await options.onPersistenceError(error);
     } catch (callbackError) {
       logToConsole('error', '[LOGGER] Persistence error callback failed.', {
         error: callbackError,
       });
+    } finally {
+      pendingErrorCallbacks--;
     }
   };
 
