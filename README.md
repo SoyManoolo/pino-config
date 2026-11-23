@@ -265,6 +265,14 @@ Conflicting cleanup configuration for shared handler: schedule and timezone must
 The existing task continues unchanged. The task stops after the last logger using
 it is closed.
 
+Cleanup schedules and timezones are validated before `handler.initialize()` runs,
+without starting cleanup or registering a shared task. Invalid cleanup options
+reject `createLogger()` before it opens handler or console resources. Initialization
+is shared across concurrent calls. If logger setup fails after initialization
+succeeds, that initialization remains cached for retries; the library disposes
+its failed console transport and cleanup registration, but does not close handler
+resources (`IDbLogHandler` has no disposal method).
+
 This behavior is:
 
 - ❌ **Disabled by default** in every environment
