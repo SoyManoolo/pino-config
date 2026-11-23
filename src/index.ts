@@ -337,7 +337,8 @@ export async function createLogger(
         });
         cleanupRegistrations.set(handler, registration);
         cleanupRegistration = registration;
-        dbLogger.info(`Cron job scheduled for log cleanup: ${cleanupSchedule}`);
+        // Free the scheduling notice's queue slot before accepting application logs.
+        await dbLogger.info(`Cron job scheduled for log cleanup: ${cleanupSchedule}`);
       }
     }
   } catch (error) {

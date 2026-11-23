@@ -495,6 +495,72 @@ describe('createLogger', () => {
     expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
   })
 
+  it.each(['success', 'failure'] as const)(
+    'waits for the scheduling notice (%s) before making the single write slot available',
+    async (outcome) => {
+      const handler = createHandler()
+      const failure = new Error('scheduling notice unavailable')
+      let finishNotice!: () => void
+      let failNotice!: (error: Error) => void
+      vi.mocked(handler.saveLog).mockImplementationOnce(
+        () => new Promise<void>((resolve, reject) => {
+          finishNotice = resolve
+          failNotice = reject
+        }),
+      )
+      const onPersistenceError = vi.fn()
+      let created = false
+      const creation = createLogger(handler, {
+        cleanup: { enabled: true },
+        maxPendingWrites: 1,
+        onPersistenceError,
+      }).then((logger) => {
+        created = true
+        return logger
+      })
+
+      await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledOnce())
+      expect(created).toBe(false)
+      expect(handler.saveLog).toHaveBeenNthCalledWith(
+        1, 'info', 'Cron job scheduled for log cleanup: 0 0 * * *', undefined,
+      )
+      if (outcome === 'failure') {
+        failNotice(failure)
+      } else {
+        finishNotice()
+      }
+
+      const logger = await creation
+      let finishPublicWrite!: () => void
+      vi.mocked(handler.saveLog).mockImplementationOnce(
+        () => new Promise<void>((resolve) => { finishPublicWrite = resolve }),
+      )
+      const publicWrite = logger.info('first application log')
+      await vi.waitFor(() => expect(handler.saveLog).toHaveBeenCalledTimes(2))
+      let closed = false
+      const closing = logger.close().then(() => { closed = true })
+      await Promise.resolve()
+      expect(closed).toBe(false)
+      finishPublicWrite()
+
+      await expect(publicWrite).resolves.toBeUndefined()
+      await closing
+      expect(closed).toBe(true)
+      expect(handler.saveLog).toHaveBeenNthCalledWith(2, 'info', 'first application log', undefined)
+      expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
+      expect(mocks.transport.mock.results[0].value.writableFinished).toBe(true)
+      if (outcome === 'failure') {
+        expect(onPersistenceError).toHaveBeenCalledExactlyOnceWith(failure)
+        expect(mocks.consoleLogger.error).toHaveBeenCalledWith(
+          expect.objectContaining({ error: failure, level: 'info' }),
+          '[LOGGER] Failed to save log to database.',
+        )
+      } else {
+        expect(onPersistenceError).not.toHaveBeenCalled()
+      }
+    },
+  )
+
   it('shares cleanup tasks between loggers using the same handler', async () => {
     const handler = createHandler()
     const firstLogger = await createLogger(handler, { cleanup: { enabled: true } })
