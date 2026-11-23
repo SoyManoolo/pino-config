@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   pino: vi.fn(),
   transport: vi.fn(),
   schedule: vi.fn(),
+  validate: vi.fn(),
   consoleLogger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -17,7 +18,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('pino', () => ({ pino: Object.assign(mocks.pino, { transport: mocks.transport }) }))
 vi.mock('croner', () => ({
-  Cron: vi.fn(function (pattern: string, options: unknown, callback: () => unknown) {
+  Cron: vi.fn(function (pattern: string, options: unknown, callback?: () => unknown) {
+    if (!callback) return mocks.validate(pattern, options)
     return mocks.schedule(pattern, callback, options)
   }),
 }))
@@ -40,6 +42,7 @@ describe('createLogger', () => {
       write(_chunk, _encoding, callback) { callback() },
     }))
     mocks.schedule.mockReturnValue({ stop: vi.fn() })
+    mocks.validate.mockReturnValue({ nextRun: vi.fn(), stop: vi.fn() })
   })
 
   it('runs the optional initialization before creating the logger', async () => {
@@ -618,8 +621,10 @@ describe('createLogger', () => {
   it.each([
     ['invalid cron expression', { schedule: 'not a cron expression' }],
     ['invalid timezone', { timezone: 'Not/A_Timezone' }],
-  ])('propagates %s errors from croner', async (_description, cleanup) => {
-    mocks.schedule.mockImplementationOnce((schedule, _callback, options) => {
+  ])('rejects %s before initializing or creating resources', async (_description, cleanup) => {
+    const handler = createHandler()
+    handler.initialize = vi.fn().mockResolvedValue(undefined)
+    mocks.validate.mockImplementationOnce((schedule, options) => {
       const matchesSchedule = 'schedule' in cleanup && schedule === cleanup.schedule
       const matchesTimezone = 'timezone' in cleanup && options?.timezone === cleanup.timezone
       if (matchesSchedule || matchesTimezone) {
@@ -629,8 +634,57 @@ describe('createLogger', () => {
       return { stop: vi.fn() }
     })
 
-    await expect(createLogger(createHandler(), { cleanup: { enabled: true, ...cleanup } }))
+    await expect(createLogger(handler, { cleanup: { enabled: true, ...cleanup } }))
       .rejects.toThrow('Invalid cron configuration')
+    expect(handler.initialize).not.toHaveBeenCalled()
+    expect(mocks.transport).not.toHaveBeenCalled()
+    expect(mocks.schedule).not.toHaveBeenCalled()
+  })
+
+  it('stops the validation task if resolving the timezone fails', async () => {
+    const stop = vi.fn()
+    const handler = createHandler()
+    handler.initialize = vi.fn()
+    mocks.validate.mockReturnValueOnce({
+      nextRun: () => { throw new Error('Invalid timezone') },
+      stop,
+    })
+
+    await expect(createLogger(handler, { cleanup: { enabled: true } }))
+      .rejects.toThrow('Invalid timezone')
+    expect(stop).toHaveBeenCalledOnce()
+    expect(handler.initialize).not.toHaveBeenCalled()
+    expect(mocks.transport).not.toHaveBeenCalled()
+  })
+
+  it('shares initialization and cleanup after concurrent validation', async () => {
+    const handler = createHandler()
+    handler.initialize = vi.fn().mockResolvedValue(undefined)
+    const options = { cleanup: { enabled: true, timezone: 'UTC' } }
+    const loggers = await Promise.all([createLogger(handler, options), createLogger(handler, options)])
+
+    expect(mocks.validate).toHaveBeenCalledTimes(2)
+    expect(mocks.validate).toHaveBeenCalledWith('0 0 * * *', { paused: true, timezone: 'UTC' })
+    expect(mocks.validate.mock.results[0].value.stop).toHaveBeenCalledTimes(2)
+    expect(handler.initialize).toHaveBeenCalledOnce()
+    expect(mocks.schedule).toHaveBeenCalledOnce()
+    await (mocks.schedule.mock.calls[0][1] as () => Promise<void>)()
+    expect(handler.cleanUpLogs).toHaveBeenCalledOnce()
+    await Promise.all(loggers.map((logger) => logger.close()))
+    expect(mocks.schedule.mock.results[0].value.stop).toHaveBeenCalledOnce()
+  })
+
+  it('disposes a failed transport and reuses initialization when scheduling fails later', async () => {
+    const handler = createHandler()
+    handler.initialize = vi.fn().mockResolvedValue(undefined)
+    const options = { cleanup: { enabled: true } }
+    mocks.schedule.mockImplementationOnce(() => { throw new Error('Scheduling failed') })
+
+    await expect(createLogger(handler, options)).rejects.toThrow('Scheduling failed')
     expect((mocks.transport.mock.results[0].value as Writable).writableEnded).toBe(true)
+    const logger = await createLogger(handler, options)
+    expect(handler.initialize).toHaveBeenCalledOnce()
+    expect(mocks.schedule).toHaveBeenCalledTimes(2)
+    await logger.close()
   })
 })

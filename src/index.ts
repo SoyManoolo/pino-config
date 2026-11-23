@@ -44,6 +44,32 @@ export async function createLogger(
     throw new RangeError('maxPendingWrites must be a positive safe integer.')
   }
 
+  const cleanupSchedule = options.cleanup?.enabled
+    ? options.cleanup.schedule ?? '0 0 * * *'
+    : undefined;
+  const cleanupTimezone = options.cleanup?.timezone || undefined;
+  const getCleanupRegistration = (): CleanupRegistration | undefined => {
+    const registration = cleanupSchedule === undefined
+      ? undefined
+      : cleanupRegistrations.get(handler);
+    if (registration &&
+      (registration.schedule !== cleanupSchedule || registration.timezone !== cleanupTimezone)) {
+      throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
+    }
+    return registration;
+  };
+
+  if (cleanupSchedule !== undefined && !getCleanupRegistration()) {
+    // No callback or shared registration: validation must not start cleanup work.
+    const validation = new Cron(cleanupSchedule, { paused: true, timezone: cleanupTimezone });
+    try {
+      // Resolve a date as well so Croner validates the timezone before initialization.
+      validation.nextRun();
+    } finally {
+      validation.stop();
+    }
+  }
+
   const initialize = handler.initialize
   if (initialize) {
     let initialization = initializations.get(handler)
@@ -62,17 +88,8 @@ export async function createLogger(
     }
   }
 
-  const cleanupSchedule = options.cleanup?.enabled
-    ? options.cleanup.schedule ?? '0 0 * * *'
-    : undefined;
-  const cleanupTimezone = options.cleanup?.timezone || undefined;
-  const existingRegistration = cleanupSchedule === undefined
-    ? undefined
-    : cleanupRegistrations.get(handler);
-  if (existingRegistration &&
-    (existingRegistration.schedule !== cleanupSchedule || existingRegistration.timezone !== cleanupTimezone)) {
-    throw new Error('Conflicting cleanup configuration for shared handler: schedule and timezone must match the existing cleanup task.');
-  }
+  // Another caller may have registered cleanup while initialization was pending.
+  const existingRegistration = getCleanupRegistration();
 
   const transport = pino.transport({
     target: 'pino-pretty',
